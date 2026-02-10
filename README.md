@@ -1,103 +1,62 @@
-# Lokutor SDKs
+# Lokutor Official SDKs
 
-Official SDKs for building voice-enabled AI applications with Lokutor.
+Build real-time, high-fidelity AI voice experiences with Lokutor. This repository contains the official client libraries for Lokutor's Voice Agent and streaming TTS APIs.
 
-## Python SDK
+## 🚀 Available SDKs
 
-The official Python SDK for real-time voice conversations with AI.
+| Language | Package | Documentation | Status |
+| :--- | :--- | :--- | :--- |
+| **Python** | [`lokutor`](https://pypi.org/project/lokutor/) | [Python README](python/README.md) | Stable |
+| **JavaScript/TS** | `Coming Soon` | - | In Development |
+| **Go** | `Coming Soon` | - | Planned |
 
-**Features:**
-- 🎤 Real-time voice input with automatic speech recognition
-- 🔊 High-quality text-to-speech synthesis
-- 🧠 LLM-powered conversational AI
-- 🎯 10 professional voices (F1-F5 female, M1-M5 male)
-- 🌍 6 supported languages
-- ⚡ Low-latency WebSocket streaming
-- 🛡️ Production-ready error handling
+---
 
-**Quick Start:**
+## 🛠️ Python SDK Quick Start
 
-```python
-from lokutor import VoiceAgentClient, VoiceStyle, Language
+The Python SDK provides a simple interface for two-way voice conversations and standalone streaming Text-to-Speech.
 
-client = VoiceAgentClient(
-    api_key="your-api-key",
-    prompt="You are a helpful assistant",
-    voice=VoiceStyle.F1,
-    language=Language.ENGLISH
-)
-
-client.start_conversation()
-```
-
-**Installation:**
+### Installation
 
 ```bash
 pip install lokutor
 ```
 
-Or from source:
+### Usage Example
 
-```bash
-cd python
-pip install -e .
+```python
+from lokutor import VoiceAgentClient
+
+# Connect to Lokutor Production API
+client = VoiceAgentClient(api_key="your_api_key")
+client.start_conversation()
 ```
 
-**Examples:**
-- [Simple Chat](python/examples/simple_chat.py) - Basic voice conversation
-- [Advanced Chat](python/examples/advanced_chat.py) - Custom prompts and callbacks
-
-**Documentation:**
-- [README](python/README.md) - Feature overview and quick start
-- [Installation Guide](python/INSTALL.md) - Detailed setup instructions
-- [API Reference](python/API_REFERENCE.md) - Complete API documentation
-- [Troubleshooting](python/TROUBLESHOOTING.md) - Common issues and solutions
-- [Development Guide](python/DEVELOPMENT.md) - Contributing and development
-
-## License
-
-MIT License - See [LICENSE](python/LICENSE) for details
-
-## Support
-
-- 📖 [Documentation](python/README.md)
-- 🐛 [GitHub Issues](https://github.com/lokutor-ai/lokutor_tts/issues)
-- 💬 [GitHub Discussions](https://github.com/lokutor-ai/lokutor_tts/discussions)
-- 📧 support@lokutor.com
-
-**Planned features:**
-- Full async/await support
-- Strong typing and null safety
-- Integration with ASP.NET
-- Unit testing helpers
+For full documentation, visit the [Python SDK folder](python/).
 
 ---
 
-### JavaScript/TypeScript SDK
+## 📑 General Information
 
-Coming soon! For web and Node.js applications.
+### API Access
+To use these SDKs, you need an API key from the [Lokutor Dashboard](https://lokutor.com). 
 
-**Planned features:**
-- Browser and Node.js support
-- TypeScript support
-- React hooks
-- Error handling and retry logic
+### Security
+These SDKs connect directly to `wss://api.lokutor.com`. Ensure your API key is kept secure and never exposed in client-side code for public applications.
 
----
+## 🤝 Contributing
 
-## Server Setup
+We welcome contributions! Please see the [Contributing Guide](python/CONTRIBUTING.md) inside the respective SDK folders.
 
-Before using any SDK, you need to run the server:
+## 📄 License
 
-```bash
-# Start the server
-GROQ_API_KEY="your-groq-key" go run cmd/server/main.go
-```
+MIT License - See the [LICENSE](python/LICENSE) file for details.
 
-The server will:
-1. Transcribe your speech (Whisper)
-2. Generate intelligent responses (Groq LLM)
-3. Convert text to speech (Versa TTS)
+## 📧 Support
+
+- 🐛 [Report a Bug](https://github.com/lokutor-ai/lokutor-sdk/issues)
+- 📧 [Contact Support](mailto:support@lokutor.com)
+- 🌐 [Official Website](https://lokutor.com)
 4. Stream everything in real-time
 
 ## Architecture
