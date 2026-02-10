@@ -1,5 +1,7 @@
 # Lokutor Official SDKs
 
+![Lokutor Hero](../assets/img/hero.png)
+
 Build real-time, high-fidelity AI voice experiences with Lokutor. This repository contains the official client libraries for Lokutor's Voice Agent and streaming TTS APIs.
 
 ## 🚀 Available SDKs

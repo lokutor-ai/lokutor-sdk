@@ -1,5 +1,7 @@
 # Lokutor JavaScript SDK
 
+![Lokutor Hero](../../assets/img/hero.png)
+
 [![npm version](https://img.shields.io/npm/v/@lokutor/sdk.svg)](https://www.npmjs.com/package/@lokutor/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
