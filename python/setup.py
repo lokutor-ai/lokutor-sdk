@@ -4,9 +4,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="lokutor-voice-agent",
+    name="lokutor",
     version="1.0.0",
-    description="Production-ready Python SDK for Lokutor Voice Agent - Real-time AI voice conversations",
+    description="Official Python SDK for Lokutor - Real-time AI voice and TTS",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Lokutor",
