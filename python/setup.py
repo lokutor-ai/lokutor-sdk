@@ -11,7 +11,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Lokutor",
     author_email="support@lokutor.com",
-    url="https://github.com/lokutor/sdk-python",
+    url="https://github.com/lokutor-ai/lokutor-sdk",
     python_requires=">=3.8",
     packages=find_packages(),
     install_requires=[
