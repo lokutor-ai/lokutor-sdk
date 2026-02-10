@@ -1,22 +1,20 @@
-# Lokutor Voice Agent Python SDK
+# Lokutor Python SDK
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![PyPI Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://pypi.org/project/lokutor/)
 
-A powerful, production-grade Python SDK for real-time voice conversations with AI. 
-Seamlessly transcribe speech, generate intelligent responses, and synthesize natural speech—all in real-time.
+The official Python SDK for Lokutor - High-performance, real-time AI voice and TTS. 
+Seamlessly transcribe speech, generate intelligent responses, and synthesize natural speech—all through a unified, production-grade interface.
 
 ## Features
 
-- 🎤 **Real-time Voice Input** - Automatic microphone recording with voice activity detection
+- 🎤 **Real-time Voice Input** - Automatic microphone recording with low-latency voice activity detection
 - 🔊 **Natural Speech Output** - High-quality text-to-speech synthesis (44.1kHz)
 - 🧠 **Intelligent Conversations** - LLM-powered responses with context awareness
-- 🎯 **10 Voice Options** - Choose from diverse voices (F1-F5 female, M1-M5 male)
-- 🌍 **Multi-Language** - English, Spanish, French, and more
-- ⚡ **Low Latency** - Raw binary WebSocket streaming for real-time interaction
-- 🛡️ **Production-Ready** - Thread-safe WebSocket management and proper audio buffering
-- 📚 **Easy API** - Minimal code required to get started
+- ⚡ **Streaming TTS** - Ultra-fast synthesis with raw binary WebSocket streaming
+- 🛡️ **Production-Ready** - Connects directly to Lokutor's secure cloud infrastructure
+- 📚 **Simple API** - Go from code to conversation in 3 lines
 
 ## Installation
 
@@ -24,10 +22,10 @@ Seamlessly transcribe speech, generate intelligent responses, and synthesize nat
 pip install lokutor
 ```
 
-Or from source:
+Or from source (for development):
 
 ```bash
-git clone https://github.com/team-hashing/lokutor_tts
+git clone https://github.com/lokutor-ai/lokutor-sdk
 cd sdk/python
 pip install -e .
 ```
@@ -157,14 +155,7 @@ client.synthesize(
 ## Troubleshooting
 
 ### Connection Issues
-The SDK defaults to `wss://api.lokutor.com`. If you are running a local server, override the `server_url`:
-
-```python
-client = VoiceAgentClient(
-    api_key="demo",
-    server_url="ws://localhost:8080/ws/agent"
-)
-```
+The SDK connects to `wss://api.lokutor.com`. Ensure you have an active internet connection and a valid API key. If you encounter authentication errors, double-check your credentials in the [Lokutor Dashboard](https://lokutor.com/dashboard).
 
 ### PyAudio Installation
 If you encounter issues installing `pyaudio`, you may need to install portaudio first:

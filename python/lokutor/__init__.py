@@ -1,5 +1,5 @@
 """
-Lokutor Voice Agent Python SDK
+Lokutor Python SDK - Official client for Lokutor real-time voice and TTS
 """
 
 from .client import VoiceAgentClient, TTSClient, simple_conversation, simple_tts

@@ -44,7 +44,7 @@ pip install lokutor
 
 **From Source**
 ```bash
-git clone https://github.com/team-hashing/lokutor_tts
+git clone https://github.com/lokutor-ai/lokutor-sdk
 cd sdk/python
 pip install -e .
 ```
@@ -171,8 +171,8 @@ See [LICENSE](LICENSE) for full details.
 - 🐛 [Troubleshooting](TROUBLESHOOTING.md)
 - 💻 [Development](DEVELOPMENT.md)
 - 🤝 [Contributing](CONTRIBUTING.md)
-- 🐛 [Issues](https://github.com/team-hashing/lokutor_tts/issues)
-- 💬 [Discussions](https://github.com/team-hashing/lokutor_tts/discussions)
+- 🐛 [Issues](https://github.com/lokutor-ai/lokutor-sdk/issues)
+- 💬 [Discussions](https://github.com/lokutor-ai/lokutor-sdk/discussions)
 
 ### Version History
 
@@ -225,7 +225,7 @@ If you use Lokutor in research or production, please cite:
 @software{lokutor2026,
   title={Lokutor: Voice AI SDK},
   author={Lokutor Team},
-  url={https://github.com/team-hashing/lokutor_tts},
+  url={https://github.com/lokutor-ai/lokutor-sdk},
   year={2026}
 }
 ```

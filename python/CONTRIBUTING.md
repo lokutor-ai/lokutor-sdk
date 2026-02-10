@@ -83,7 +83,7 @@ Before creating a bug report, check if the issue already exists. When creating a
 
 ```bash
 # Clone repository
-git clone https://github.com/team-hashing/lokutor_tts
+git clone https://github.com/lokutor-ai/lokutor-sdk
 cd sdk/python
 
 # Create virtual environment
@@ -538,7 +538,7 @@ x = x * 2  # Multiply x by 2
 ## Questions?
 
 - 📖 [Documentation](README.md)
-- 💬 [GitHub Discussions](https://github.com/team-hashing/lokutor_tts/discussions)
+- 💬 [GitHub Discussions](https://github.com/lokutor-ai/lokutor-sdk/discussions)
 - 📧 support@lokutor.com
 
 ## License

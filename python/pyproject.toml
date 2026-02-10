@@ -8,7 +8,7 @@ version = "1.0.0"
 authors = [
   { name="Lokutor", email="support@lokutor.com" },
 ]
-description = "Production-ready Python SDK for Lokutor Voice Agent - Real-time AI voice conversations"
+description = "Official Python SDK for Lokutor - Real-time AI voice and TTS"
 readme = "README.md"
 requires-python = ">=3.8"
 keywords = ["voice", "ai", "agent", "conversation", "tts", "stt", "llm"]
