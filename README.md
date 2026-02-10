@@ -7,32 +7,52 @@ Build real-time, high-fidelity AI voice experiences with Lokutor. This repositor
 | Language | Package | Documentation | Status |
 | :--- | :--- | :--- | :--- |
 | **Python** | [`lokutor`](https://pypi.org/project/lokutor/) | [Python README](python/README.md) | Stable |
-| **JavaScript/TS** | `Coming Soon` | - | In Development |
+| **JavaScript/TS** | `@lokutor/sdk` | [JavaScript README](js/README.md) | Stable |
 | **Go** | `Coming Soon` | - | Planned |
 
 ---
 
-## 🛠️ Python SDK Quick Start
+## 🛠️ Quick Start
 
-The Python SDK provides a simple interface for two-way voice conversations and standalone streaming Text-to-Speech.
+Lokutor SDKs provide a simple, unified interface for two-way voice conversations and streaming Text-to-Speech.
 
-### Installation
+### Python
 
 ```bash
 pip install lokutor
 ```
 
-### Usage Example
-
 ```python
-from lokutor import VoiceAgentClient
+from lokutor import VoiceAgentClient, TTSClient
 
-# Connect to Lokutor Production API
-client = VoiceAgentClient(api_key="your_api_key")
-client.start_conversation()
+# 1. Voice Conversation
+agent = VoiceAgentClient(api_key="your_api_key")
+agent.start_conversation()
+
+# 2. Standalone TTS
+tts = TTSClient(api_key="your_api_key")
+tts.synthesize(text="Hello world", play=True)
 ```
 
-For full documentation, visit the [Python SDK folder](python/).
+### JavaScript / TypeScript
+
+```bash
+npm install @lokutor/sdk
+```
+
+```typescript
+import { VoiceAgentClient, TTSClient } from '@lokutor/sdk';
+
+// 1. Voice Conversation
+const agent = new VoiceAgentClient({ apiKey: 'your_api_key', prompt: 'Hello' });
+await agent.connect();
+
+// 2. Standalone TTS
+const tts = new TTSClient({ apiKey: 'your_api_key' });
+await tts.synthesize({ text: 'Hello', onAudio: (buf) => play(buf) });
+```
+
+For full documentation, visit the respective [Python](python/) or [JavaScript](js/) folders.
 
 ---
 

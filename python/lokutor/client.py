@@ -131,6 +131,8 @@ class VoiceAgentClient:
         server_url: str = DEFAULT_VOICE_AGENT_URL,
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
+        on_audio: Optional[Callable[[bytes], None]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
         """
@@ -144,6 +146,8 @@ class VoiceAgentClient:
             server_url: WebSocket server URL
             on_transcription: Optional callback when user speech is transcribed
             on_response: Optional callback when agent text response is received
+            on_audio: Optional callback when raw audio bytes are received
+            on_status: Optional callback for status changes
             on_error: Optional callback when errors occur
         """
         self.api_key = api_key
@@ -155,6 +159,8 @@ class VoiceAgentClient:
         # Callbacks
         self.on_transcription = on_transcription
         self.on_response = on_response
+        self.on_audio = on_audio
+        self.on_status = on_status
         self.on_error = on_error
         
         # Connection state
@@ -286,6 +292,8 @@ class VoiceAgentClient:
         try:
             # Handle binary audio frames
             if isinstance(message, bytes):
+                if self.on_audio:
+                    self.on_audio(message)
                 self.audio.write(message)
                 return
 
@@ -297,7 +305,10 @@ class VoiceAgentClient:
                 if msg_type == "audio":
                     # Backward compatibility for JSON audio
                     audio_data = base64.b64decode(msg["data"])
+                    if self.on_audio:
+                        self.on_audio(audio_data)
                     self.audio.write(audio_data)
+                    return
 
                 elif msg_type == "transcript":
                     transcript = msg.get("data")
@@ -314,6 +325,9 @@ class VoiceAgentClient:
 
                 elif msg_type == "status":
                     status = msg.get("data")
+                    if self.on_status:
+                        self.on_status(status)
+                        
                     if status == "interrupted":
                         logger.info("⚡ Interrupted")
                         self.audio.clear_output()
@@ -368,6 +382,7 @@ class TTSClient:
         speed: float = 1.05,
         steps: int = 24,
         visemes: bool = False,
+        on_audio: Optional[Callable[[bytes], None]] = None,
         on_visemes: Optional[Callable[[list], None]] = None,
         play: bool = True,
         block: bool = True
@@ -382,6 +397,7 @@ class TTSClient:
             speed: Speech speed
             steps: Inference steps (quality)
             visemes: Whether to request visemes
+            on_audio: Optional callback for raw audio bytes
             on_visemes: Optional callback for viseme data
             play: Whether to play the audio immediately
             block: Whether to wait for playback to finish
@@ -399,6 +415,8 @@ class TTSClient:
 
         def on_message(ws, message):
             if isinstance(message, bytes):
+                if on_audio:
+                    on_audio(message)
                 if play:
                     self.audio.write(message)
             elif isinstance(message, str):

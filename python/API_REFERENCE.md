@@ -29,9 +29,10 @@ client = VoiceAgentClient(
     language: Language = Language.ENGLISH,
     server_url: str = "ws://localhost:8080/ws/agent",
     on_transcription: Optional[Callable[[str], None]] = None,
-    on_agent_response: Optional[Callable[[str], None]] = None,
-    on_audio_chunk: Optional[Callable[[bytes], None]] = None,
-    on_error: Optional[Callable[[Exception], None]] = None
+    on_response: Optional[Callable[[str], None]] = None,
+    on_audio: Optional[Callable[[bytes], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+    on_error: Optional[Callable[[str], None]] = None
 )
 ```
 
@@ -44,12 +45,14 @@ client = VoiceAgentClient(
 - **server_url** (str): WebSocket server URL. Default: ws://localhost:8080/ws/agent.
 - **on_transcription** (Callable): Callback when user speech is transcribed.
   - Called with: `(text: str) -> None`
-- **on_agent_response** (Callable): Callback when agent generates response.
+- **on_response** (Callable): Callback when agent generates response.
   - Called with: `(text: str) -> None`
-- **on_audio_chunk** (Callable): Callback as audio chunks arrive.
+- **on_audio** (Callable): Callback as audio chunks arrive.
   - Called with: `(chunk: bytes) -> None`
+- **on_status** (Callable): Callback for status changes (interrupted, thinking, speaking, listening).
+  - Called with: `(status: str) -> None`
 - **on_error** (Callable): Callback when errors occur.
-  - Called with: `(error: Exception) -> None`
+  - Called with: `(error: str) -> None`
 
 #### Example
 
@@ -209,9 +212,7 @@ from lokutor import TTSClient, VoiceStyle, Language
 
 client = TTSClient(
     api_key: str,
-    server_url: str = "ws://localhost:8080/ws/handler",
-    on_chunk: Optional[Callable[[bytes], None]] = None,
-    on_error: Optional[Callable[[Exception], None]] = None
+    server_url: str = "ws://localhost:8080/ws/handler"
 )
 ```
 
@@ -219,35 +220,34 @@ client = TTSClient(
 
 - **api_key** (str): API key for authentication. Required.
 - **server_url** (str): WebSocket server URL. Default: ws://localhost:8080/ws/handler.
-- **on_chunk** (Callable): Callback for audio chunks.
-  - Called with: `(chunk: bytes) -> None`
-- **on_error** (Callable): Callback for errors.
-  - Called with: `(error: Exception) -> None`
 
 #### Example
 
 ```python
-def on_chunk(chunk):
-    print(f"Received {len(chunk)} bytes")
-
 client = TTSClient(
-    api_key="your-api-key",
-    on_chunk=on_chunk
+    api_key="your-api-key"
 )
 ```
 
 ### Methods
 
-#### `connect() -> bool`
+#### `synthesize(...) -> websocket.WebSocketApp`
 
-Connect to TTS server.
+Synthesize text to speech.
 
-**Returns:** `True` if successful, `False` otherwise.
-
-```python
-if client.connect():
-    print("TTS server connected")
-```
+**Parameters:**
+- **text** (str): Text to synthesize.
+- **voice** (VoiceStyle): Voice style to use. Default: F1.
+- **language** (Language): Language to use. Default: ENGLISH.
+- **speed** (float): Speech rate multiplier. Default: 1.05.
+- **steps** (int): Synthesis quality (1-50). Default: 24.
+- **visemes** (bool): Whether to include viseme data for animation. Default: False.
+- **on_audio** (Callable): Callback for raw audio bytes.
+  - Called with: `(chunk: bytes) -> None`
+- **on_visemes** (Callable): Callback for viseme data.
+  - Called with: `(visemes: list) -> None`
+- **play** (bool): Whether to play audio immediately using system speakers. Default: True.
+- **block** (bool): Whether to wait for playback to finish before return (only if play=True). Default: True.
 
 #### `synthesize(text: str, voice: VoiceStyle, language: Language, play: bool = False) -> bytes`
 
