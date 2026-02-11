@@ -8,7 +8,7 @@ export enum VoiceStyle {
   F3 = "F3",
   F4 = "F4",
   F5 = "F5",
-  
+
   // Male voices
   M1 = "M1",
   M2 = "M2",
@@ -56,7 +56,7 @@ export interface LokutorConfig {
   serverUrl?: string;
   onTranscription?: (text: string) => void;
   onResponse?: (text: string) => void;
-  onAudio?: (data: Buffer) => void;
+  onAudio?: (data: Uint8Array) => void;
   onStatus?: (status: string) => void;
   onError?: (error: any) => void;
 }

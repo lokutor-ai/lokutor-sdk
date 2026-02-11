@@ -1,11 +1,20 @@
-import { WebSocket } from 'ws';
-import { 
-  VoiceStyle, 
-  Language, 
-  DEFAULT_URLS, 
+import {
+  VoiceStyle,
+  Language,
+  DEFAULT_URLS,
   LokutorConfig,
   SynthesizeOptions
 } from './types';
+
+// Browser-compatible base64 to Uint8Array
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
 
 /**
  * Main client for Lokutor Voice Agent SDK
@@ -23,16 +32,16 @@ export class VoiceAgentClient {
   // Callbacks
   private onTranscription?: (text: string) => void;
   private onResponse?: (text: string) => void;
-  private onAudioCallback?: (data: Buffer) => void;
+  private onAudioCallback?: (data: Uint8Array) => void;
   private onStatus?: (status: string) => void;
   private onError?: (error: any) => void;
 
   private isConnected: boolean = false;
 
-  constructor(config: LokutorConfig & { 
-    prompt: string, 
-    voice?: VoiceStyle, 
-    language?: Language 
+  constructor(config: LokutorConfig & {
+    prompt: string,
+    voice?: VoiceStyle,
+    language?: Language
   }) {
     this.apiKey = config.apiKey;
     this.serverUrl = config.serverUrl || DEFAULT_URLS.VOICE_AGENT;
@@ -53,42 +62,42 @@ export class VoiceAgentClient {
   public async connect(): Promise<boolean> {
     return new Promise((resolve, reject) => {
       try {
-        console.log(`🔗 Connecting to ${this.serverUrl}...`);
-
-        const headers: Record<string, string> = {};
+        let url = this.serverUrl;
         if (this.apiKey) {
-          headers['X-API-Key'] = this.apiKey;
+          const separator = url.includes('?') ? '&' : '?';
+          url += `${separator}api_key=${this.apiKey}`;
         }
 
-        this.ws = new WebSocket(this.serverUrl, {
-          headers: headers
-        });
+        console.log(`🔗 Connecting to ${this.serverUrl}...`);
 
-        this.ws.on('open', () => {
+        this.ws = new WebSocket(url);
+        this.ws.binaryType = 'arraybuffer';
+
+        this.ws.onopen = () => {
           this.isConnected = true;
           console.log('✅ Connected to voice agent!');
           this.sendConfig();
           resolve(true);
-        });
+        };
 
-        this.ws.on('message', (data, isBinary) => {
-          if (isBinary) {
-            this.handleBinaryMessage(data as Buffer);
+        this.ws.onmessage = async (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            this.handleBinaryMessage(new Uint8Array(event.data));
           } else {
-            this.handleTextMessage(data.toString());
+            this.handleTextMessage(event.data.toString());
           }
-        });
+        };
 
-        this.ws.on('error', (err) => {
+        this.ws.onerror = (err) => {
           console.error('❌ WebSocket error:', err);
           if (this.onError) this.onError(err);
           if (!this.isConnected) reject(err);
-        });
+        };
 
-        this.ws.on('close', () => {
+        this.ws.onclose = () => {
           this.isConnected = false;
           console.log('Disconnected');
-        });
+        };
 
       } catch (err) {
         if (this.onError) this.onError(err);
@@ -106,7 +115,7 @@ export class VoiceAgentClient {
     this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
     this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
-    
+
     console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}`);
   }
 
@@ -114,18 +123,16 @@ export class VoiceAgentClient {
    * Send raw PCM audio data to the server
    * @param audioData Int16 PCM audio buffer
    */
-  public sendAudio(audioData: Buffer | Uint8Array) {
+  public sendAudio(audioData: Uint8Array) {
     if (this.ws && this.isConnected) {
-      this.ws.send(audioData, { binary: true });
+      this.ws.send(audioData);
     }
   }
 
   /**
    * Handle incoming binary data (audio response)
    */
-  private handleBinaryMessage(data: Buffer) {
-    // This should be handled by the audio output system
-    // We emit an event or call a callback if configured
+  private handleBinaryMessage(data: Uint8Array) {
     this.emit('audio', data);
   }
 
@@ -138,7 +145,7 @@ export class VoiceAgentClient {
       switch (msg.type) {
         case 'audio':
           if (msg.data) {
-            const buffer = Buffer.from(msg.data, 'base64');
+            const buffer = base64ToUint8Array(msg.data);
             this.handleBinaryMessage(buffer);
           }
           break;
@@ -171,7 +178,7 @@ export class VoiceAgentClient {
     }
   }
 
-  private audioListeners: ((data: Buffer) => void)[] = [];
+  private audioListeners: ((data: Uint8Array) => void)[] = [];
 
   private emit(event: string, data: any) {
     if (event === 'audio') {
@@ -180,7 +187,7 @@ export class VoiceAgentClient {
     }
   }
 
-  public onAudio(callback: (data: Buffer) => void) {
+  public onAudio(callback: (data: Uint8Array) => void) {
     this.audioListeners.push(callback);
   }
 
@@ -201,12 +208,9 @@ export class VoiceAgentClient {
 export class TTSClient {
   private apiKey: string;
   private serverUrl: string;
-  private onAudioCallback?: (data: Buffer) => void;
-  private onVisemesCallback?: (visemes: any[]) => void;
-  private onErrorCallback?: (error: any) => void;
 
-  constructor(config: { 
-    apiKey: string; 
+  constructor(config: {
+    apiKey: string;
     serverUrl?: string;
   }) {
     this.apiKey = config.apiKey;
@@ -226,20 +230,22 @@ export class TTSClient {
     speed?: number;
     steps?: number;
     visemes?: boolean;
-    onAudio?: (data: Buffer) => void;
+    onAudio?: (data: Uint8Array) => void;
     onVisemes?: (visemes: any[]) => void;
     onError?: (error: any) => void;
   }): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        const headers: Record<string, string> = {};
+        let url = this.serverUrl;
         if (this.apiKey) {
-          headers['X-API-Key'] = this.apiKey;
+          const separator = url.includes('?') ? '&' : '?';
+          url += `${separator}api_key=${this.apiKey}`;
         }
 
-        const ws = new WebSocket(this.serverUrl, { headers });
+        const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
 
-        ws.on('open', () => {
+        ws.onopen = () => {
           const req = {
             text: options.text,
             voice: options.voice || VoiceStyle.F1,
@@ -249,14 +255,14 @@ export class TTSClient {
             visemes: options.visemes || false
           };
           ws.send(JSON.stringify(req));
-        });
+        };
 
-        ws.on('message', (data, isBinary) => {
-          if (isBinary) {
-            if (options.onAudio) options.onAudio(data as Buffer);
+        ws.onmessage = async (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            if (options.onAudio) options.onAudio(new Uint8Array(event.data));
           } else {
             try {
-              const msg = JSON.parse(data.toString());
+              const msg = JSON.parse(event.data.toString());
               if (Array.isArray(msg) && options.onVisemes) {
                 options.onVisemes(msg);
               }
@@ -264,16 +270,16 @@ export class TTSClient {
               // Ignore non-JSON or other messages
             }
           }
-        });
+        };
 
-        ws.on('error', (err) => {
+        ws.onerror = (err) => {
           if (options.onError) options.onError(err);
           reject(err);
-        });
+        };
 
-        ws.on('close', () => {
+        ws.onclose = () => {
           resolve();
-        });
+        };
 
       } catch (err) {
         if (options.onError) options.onError(err);
@@ -295,7 +301,7 @@ export async function simpleConversation(config: LokutorConfig & { prompt: strin
 /**
  * Quick function for standalone TTS synthesis
  */
-export async function simpleTTS(options: SynthesizeOptions & { apiKey: string, onAudio: (buf: Buffer) => void }) {
+export async function simpleTTS(options: SynthesizeOptions & { apiKey: string, onAudio: (buf: Uint8Array) => void }) {
   const client = new TTSClient({ apiKey: options.apiKey });
   return client.synthesize(options);
 }

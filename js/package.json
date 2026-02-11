@@ -1,6 +1,6 @@
 {
   "name": "@lokutor/sdk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "JavaScript/TypeScript SDK for Lokutor Real-time Voice AI",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -27,12 +27,9 @@
   ],
   "author": "Lokutor AI",
   "license": "MIT",
-  "dependencies": {
-    "ws": "^8.16.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.10.0",
-    "@types/ws": "^8.5.10",
     "tsup": "^8.0.1",
     "typescript": "^5.3.2",
     "vitest": "^1.0.1"
