@@ -40,7 +40,6 @@ def main():
 Keep responses concise and practical.""",
         voice=VoiceStyle.M3,  # Male voice 3
         language=Language.ENGLISH,
-        # server_url="ws://localhost:8080/ws/agent", # Use default or override
         # Add callbacks to track conversation
         on_transcription=on_transcription,
         on_response=on_response,

@@ -78,17 +78,6 @@ class TestVoiceAgentClient(unittest.TestCase):
         self.assertTrue(client.stop_conversation)
         client.ws.close.assert_called_once()
 
-    def test_custom_server_url(self):
-        """Test custom server URL"""
-        url = "ws://custom-server:9000/voice"
-        client = VoiceAgentClient(
-            api_key="test",
-            prompt="test",
-            server_url=url,
-        )
-        
-        self.assertEqual(client.server_url, url)
-
 
 class TestVoiceStyles(unittest.TestCase):
     """Test VoiceStyle enum"""

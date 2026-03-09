@@ -24,7 +24,6 @@ function base64ToUint8Array(base64: string): Uint8Array {
 export class VoiceAgentClient {
   private ws: WebSocket | null = null;
   private apiKey: string;
-  private serverUrl: string;
   public prompt: string;
   public voice: VoiceStyle;
   public language: Language;
@@ -37,6 +36,7 @@ export class VoiceAgentClient {
   private onError?: (error: any) => void;
 
   private isConnected: boolean = false;
+  private messages: Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> = [];
 
   constructor(config: LokutorConfig & {
     prompt: string,
@@ -44,7 +44,6 @@ export class VoiceAgentClient {
     language?: Language
   }) {
     this.apiKey = config.apiKey;
-    this.serverUrl = config.serverUrl || DEFAULT_URLS.VOICE_AGENT;
     this.prompt = config.prompt;
     this.voice = config.voice || VoiceStyle.F1;
     this.language = config.language || Language.ENGLISH;
@@ -62,13 +61,13 @@ export class VoiceAgentClient {
   public async connect(): Promise<boolean> {
     return new Promise((resolve, reject) => {
       try {
-        let url = this.serverUrl;
+        let url = DEFAULT_URLS.VOICE_AGENT;
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
           url += `${separator}api_key=${this.apiKey}`;
         }
 
-        console.log(`🔗 Connecting to ${this.serverUrl}...`);
+        console.log(`🔗 Connecting to ${DEFAULT_URLS.VOICE_AGENT}...`);
 
         this.ws = new WebSocket(url);
         this.ws.binaryType = 'arraybuffer';
@@ -150,6 +149,14 @@ export class VoiceAgentClient {
           }
           break;
         case 'transcript':
+          const role = msg.role === 'user' ? 'user' : 'agent';
+          // Store in history
+          this.messages.push({
+            role,
+            text: msg.data,
+            timestamp: Date.now()
+          });
+          
           if (msg.role === 'user') {
             if (this.onTranscription) this.onTranscription(msg.data);
             console.log(`💬 You: ${msg.data}`);
@@ -200,6 +207,39 @@ export class VoiceAgentClient {
       this.ws = null;
     }
   }
+
+  /**
+   * Update the system prompt mid-conversation
+   */
+  public updatePrompt(newPrompt: string) {
+    this.prompt = newPrompt;
+    if (this.ws && this.isConnected) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'prompt', data: newPrompt }));
+        console.log(`⚙️ Updated prompt: ${newPrompt.substring(0, 50)}...`);
+      } catch (error) {
+        console.error('Error updating prompt:', error);
+      }
+    } else {
+      console.warn('Not connected - prompt will be updated on next connection');
+    }
+  }
+
+  /**
+   * Get full conversation transcript
+   */
+  public getTranscript(): Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> {
+    return this.messages.slice();
+  }
+
+  /**
+   * Get conversation as formatted text
+   */
+  public getTranscriptText(): string {
+    return this.messages
+      .map(msg => `${msg.role === 'user' ? 'You' : 'Agent'}: ${msg.text}`)
+      .join('\n');
+  }
 }
 
 /**
@@ -207,14 +247,11 @@ export class VoiceAgentClient {
  */
 export class TTSClient {
   private apiKey: string;
-  private serverUrl: string;
 
   constructor(config: {
     apiKey: string;
-    serverUrl?: string;
   }) {
     this.apiKey = config.apiKey;
-    this.serverUrl = config.serverUrl || DEFAULT_URLS.TTS;
   }
 
   /**
@@ -236,7 +273,7 @@ export class TTSClient {
   }): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        let url = this.serverUrl;
+        let url = DEFAULT_URLS.TTS;
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
           url += `${separator}api_key=${this.apiKey}`;

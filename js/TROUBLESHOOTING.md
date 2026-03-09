@@ -5,7 +5,6 @@
 ### WebSocket connection failed
 - Verify your `apiKey` is correct.
 - Check if your firewall allows connections on port 443.
-- If using a local server, ensure it is running and accessible at the provided `serverUrl`.
 
 ## Audio Issues
 

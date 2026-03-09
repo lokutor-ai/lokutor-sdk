@@ -128,7 +128,6 @@ class VoiceAgentClient:
         prompt: str,
         voice: VoiceStyle = VoiceStyle.F1,
         language: Language = Language.ENGLISH,
-        server_url: str = DEFAULT_VOICE_AGENT_URL,
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
@@ -143,7 +142,6 @@ class VoiceAgentClient:
             prompt: System prompt for the AI agent
             voice: Voice style to use (VoiceStyle enum)
             language: Language for speech and text (Language enum)
-            server_url: WebSocket server URL
             on_transcription: Optional callback when user speech is transcribed
             on_response: Optional callback when agent text response is received
             on_audio: Optional callback when raw audio bytes are received
@@ -154,7 +152,7 @@ class VoiceAgentClient:
         self.prompt = prompt
         self.voice = voice
         self.language = language
-        self.server_url = server_url
+        self.server_url = DEFAULT_VOICE_AGENT_URL
         
         # Callbacks
         self.on_transcription = on_transcription
@@ -168,6 +166,9 @@ class VoiceAgentClient:
         self.connected = False
         self.stop_conversation = False
         self.audio = _AudioIO()
+        
+        # Message history
+        self.messages = []  # List of {"role": "user"|"agent", "text": "...", "timestamp": ...}
 
     def connect(self) -> bool:
         """
@@ -221,6 +222,30 @@ class VoiceAgentClient:
             self.ws.close()
         self.audio.stop()
         logger.info("Disconnected")
+    
+    def update_prompt(self, new_prompt: str):
+        """Update the system prompt mid-conversation"""
+        self.prompt = new_prompt
+        if self.ws and self.connected:
+            try:
+                self.ws.send(json.dumps({"type": "prompt", "data": new_prompt}))
+                logger.info(f"⚙️ Updated prompt: {new_prompt[:50]}...")
+            except Exception as e:
+                logger.error(f"Error updating prompt: {e}")
+        else:
+            logger.warning("Not connected - prompt will be updated on next connection")
+    
+    def get_transcript(self) -> list:
+        """Get full conversation transcript"""
+        return self.messages.copy()
+    
+    def get_transcript_text(self) -> str:
+        """Get conversation as formatted text"""
+        lines = []
+        for msg in self.messages:
+            role_label = "You" if msg["role"] == "user" else "Agent"
+            lines.append(f"{role_label}: {msg['text']}")
+        return "\n".join(lines)
 
     def start_conversation(self):
         """Start an interactive voice conversation"""
@@ -314,6 +339,13 @@ class VoiceAgentClient:
                     transcript = msg.get("data")
                     role = msg.get("role", "user")
                     
+                    # Store in history
+                    self.messages.append({
+                        "role": role,
+                        "text": transcript,
+                        "timestamp": time.time()
+                    })
+                    
                     if role == "user":
                         if self.on_transcription:
                             self.on_transcription(transcript)
@@ -368,10 +400,9 @@ class TTSClient:
     def __init__(
         self,
         api_key: str,
-        server_url: str = DEFAULT_TTS_URL,
     ):
         self.api_key = api_key
-        self.server_url = server_url
+        self.server_url = DEFAULT_TTS_URL
         self.audio = _AudioIO()
 
     def synthesize(
@@ -462,7 +493,6 @@ def simple_conversation(
     prompt: str = "You are a helpful AI assistant",
     voice: VoiceStyle = VoiceStyle.F1,
     language: Language = Language.ENGLISH,
-    server_url: str = DEFAULT_VOICE_AGENT_URL,
 ):
     """
     Quick function to start a conversation without manual setup
@@ -472,7 +502,6 @@ def simple_conversation(
         prompt=prompt,
         voice=voice,
         language=language,
-        server_url=server_url,
     )
     client.start_conversation()
 
@@ -483,11 +512,10 @@ def simple_tts(
     voice: VoiceStyle = VoiceStyle.F1,
     language: Language = Language.ENGLISH,
     play: bool = True,
-    server_url: str = DEFAULT_TTS_URL,
 ):
     """
     Quick function for standalone TTS synthesis
     """
-    client = TTSClient(api_key=api_key, server_url=server_url)
+    client = TTSClient(api_key=api_key)
     client.synthesize(text=text, voice=voice, language=language, play=play, block=True)
 

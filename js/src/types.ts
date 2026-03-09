@@ -33,6 +33,7 @@ export enum Language {
  */
 export const AUDIO_CONFIG = {
   SAMPLE_RATE: 44100,
+  SPEAKER_SAMPLE_RATE: 16000,
   CHANNELS: 1,
   CHUNK_DURATION_MS: 20,
   get CHUNK_SIZE() {
@@ -53,7 +54,6 @@ export const DEFAULT_URLS = {
  */
 export interface LokutorConfig {
   apiKey: string;
-  serverUrl?: string;
   onTranscription?: (text: string) => void;
   onResponse?: (text: string) => void;
   onAudio?: (data: Uint8Array) => void;

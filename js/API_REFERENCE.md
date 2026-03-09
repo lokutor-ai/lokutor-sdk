@@ -19,7 +19,6 @@ new VoiceAgentClient(config: LokutorConfig & {
 - `prompt` (string): The system prompt defining the AI's persona.
 - `voice` (VoiceStyle): Optional. Default is `VoiceStyle.F1`.
 - `language` (Language): Optional. Default is `Language.ENGLISH`.
-- `serverUrl` (string): Optional. Custom WebSocket URL.
 - `onTranscription` (function): Callback for user speech transcriptions.
 - `onResponse` (function): Callback for AI text responses.
 - `onAudio` (function): Callback for raw agent audio buffers.
@@ -49,7 +48,7 @@ Dedicated client for converting text to high-quality streaming audio.
 ### Constructor
 
 ```typescript
-new TTSClient(config: { apiKey: string, serverUrl?: string })
+new TTSClient(config: { apiKey: string })
 ```
 
 ### Methods
