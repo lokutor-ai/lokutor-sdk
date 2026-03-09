@@ -19,7 +19,7 @@ async function main() {
   const speaker = new Speaker({
     channels: AUDIO_CONFIG.CHANNELS,
     bitDepth: 16,
-    sampleRate: AUDIO_CONFIG.SAMPLE_RATE,
+    sampleRate: AUDIO_CONFIG.SPEAKER_SAMPLE_RATE,
   });
 
   try {

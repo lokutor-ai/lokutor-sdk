@@ -32,8 +32,8 @@ export enum Language {
  * Audio configuration constants
  */
 export const AUDIO_CONFIG = {
-  SAMPLE_RATE: 44100,
-  SPEAKER_SAMPLE_RATE: 16000,
+  SAMPLE_RATE: 16000,
+  SPEAKER_SAMPLE_RATE: 44100,
   CHANNELS: 1,
   CHUNK_DURATION_MS: 20,
   get CHUNK_SIZE() {

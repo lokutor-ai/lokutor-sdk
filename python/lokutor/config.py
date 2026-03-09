@@ -32,8 +32,8 @@ class Language(str, Enum):
 
 
 # Audio configuration
-SAMPLE_RATE = 44100  # Input (microphone) sample rate
-SPEAKER_SAMPLE_RATE = 16000  # Output (speaker) sample rate
+SAMPLE_RATE = 16000  # Input (microphone) sample rate
+SPEAKER_SAMPLE_RATE = 44100  # Output (speaker) sample rate
 CHANNELS = 1
 CHUNK_DURATION_MS = 20
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
