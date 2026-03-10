@@ -17,6 +17,7 @@ import pyaudio
 from .config import (
     VoiceStyle,
     Language,
+    Viseme,
     SAMPLE_RATE,
     SPEAKER_SAMPLE_RATE,
     CHANNELS,
@@ -131,6 +132,7 @@ class VoiceAgentClient:
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
+        on_visemes: Optional[Callable[[list], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -145,6 +147,7 @@ class VoiceAgentClient:
             on_transcription: Optional callback when user speech is transcribed
             on_response: Optional callback when agent text response is received
             on_audio: Optional callback when raw audio bytes are received
+            on_visemes: Optional callback when viseme data is received
             on_status: Optional callback for status changes
             on_error: Optional callback when errors occur
         """
@@ -153,11 +156,13 @@ class VoiceAgentClient:
         self.voice = voice
         self.language = language
         self.server_url = DEFAULT_VOICE_AGENT_URL
+        self.want_visemes = False  # Enable via send_text(visemes=True)
         
         # Callbacks
         self.on_transcription = on_transcription
         self.on_response = on_response
         self.on_audio = on_audio
+        self.on_visemes = on_visemes
         self.on_status = on_status
         self.on_error = on_error
         
@@ -223,6 +228,31 @@ class VoiceAgentClient:
         self.audio.stop()
         logger.info("Disconnected")
     
+    def send_text(self, text: str, visemes: bool = False) -> None:
+        """
+        Send a text message to the agent with optional viseme request
+        
+        Args:
+            text: The text message to send
+            visemes: Whether to request visemes for lip-sync animation
+        """
+        if not self.ws or not self.connected:
+            logger.error("Not connected to server")
+            return
+        
+        try:
+            message = {
+                "type": "text",
+                "data": text,
+                "visemes": visemes,
+            }
+            self.ws.send(json.dumps(message))
+            logger.debug(f"📨 Sent text: {text[:50]}...")
+        except Exception as e:
+            logger.error(f"Error sending text: {e}")
+            if self.on_error:
+                self.on_error(f"Failed to send text: {e}")
+    
     def update_prompt(self, new_prompt: str):
         """Update the system prompt mid-conversation"""
         self.prompt = new_prompt
@@ -234,6 +264,19 @@ class VoiceAgentClient:
                 logger.error(f"Error updating prompt: {e}")
         else:
             logger.warning("Not connected - prompt will be updated on next connection")
+    
+    def set_visemes_enabled(self, enabled: bool) -> None:
+        """
+        Enable/disable viseme requests for future text messages
+        
+        Args:
+            enabled: Whether to request visemes
+        """
+        self.want_visemes = enabled
+        if enabled:
+            logger.info("👁️  Visemes enabled")
+        else:
+            logger.info("👁️  Visemes disabled")
     
     def get_transcript(self) -> list:
         """Get full conversation transcript"""
@@ -369,6 +412,21 @@ class VoiceAgentClient:
                         logger.info("🔊 Agent speaking...")
                     elif status == "listening":
                         logger.info("👂 Listening...")
+
+                elif msg_type == "visemes":
+                    viseme_data = msg.get("data", [])
+                    if viseme_data and self.on_visemes:
+                        # Convert to Viseme objects
+                        visemes = [
+                            Viseme(
+                                id=v.get("id"),
+                                char=v.get("char"),
+                                timestamp=v.get("timestamp")
+                            )
+                            for v in viseme_data
+                        ]
+                        self.on_visemes(visemes)
+                        logger.debug(f"👁️ Received {len(visemes)} visemes")
 
                 elif msg_type == "error":
                     err_data = msg.get("data")

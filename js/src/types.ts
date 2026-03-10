@@ -72,3 +72,40 @@ export interface SynthesizeOptions {
   steps?: number;
   visemes?: boolean;
 }
+
+/**
+ * Browser audio configuration options
+ */
+export interface BrowserAudioOptions {
+  inputSampleRate?: number;
+  outputSampleRate?: number;
+  autoGainControl?: boolean;
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  analyserEnabled?: boolean;
+  onInputError?: (error: Error) => void;
+}
+
+/**
+ * Voice agent conversation options
+ */
+export interface VoiceAgentOptions {
+  prompt?: string;
+  voice?: VoiceStyle;
+  language?: Language;
+  serverUrl?: string;
+  visemes?: boolean;
+  onTranscription?: (text: string, isUser: boolean) => void;
+  onVisemes?: (visemes: Viseme[]) => void;
+  onStatusChange?: (status: string) => void;
+  onError?: (err: any) => void;
+}
+
+/**
+ * Viseme data for lip-sync animation
+ */
+export interface Viseme {
+  id: number;
+  char: string;
+  timestamp: number;
+}

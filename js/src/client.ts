@@ -3,7 +3,8 @@ import {
   Language,
   DEFAULT_URLS,
   LokutorConfig,
-  SynthesizeOptions
+  SynthesizeOptions,
+  Viseme,
 } from './types';
 
 // Browser-compatible base64 to Uint8Array
@@ -32,16 +33,19 @@ export class VoiceAgentClient {
   private onTranscription?: (text: string) => void;
   private onResponse?: (text: string) => void;
   private onAudioCallback?: (data: Uint8Array) => void;
+  private onVisemesCallback?: (visemes: Viseme[]) => void;
   private onStatus?: (status: string) => void;
   private onError?: (error: any) => void;
 
   private isConnected: boolean = false;
   private messages: Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> = [];
+  private visemeListeners: ((visemes: Viseme[]) => void)[] = [];
 
   constructor(config: LokutorConfig & {
     prompt: string,
     voice?: VoiceStyle,
-    language?: Language
+    language?: Language,
+    onVisemes?: (visemes: Viseme[]) => void,
   }) {
     this.apiKey = config.apiKey;
     this.prompt = config.prompt;
@@ -51,6 +55,7 @@ export class VoiceAgentClient {
     this.onTranscription = config.onTranscription;
     this.onResponse = config.onResponse;
     this.onAudioCallback = config.onAudio;
+    this.onVisemesCallback = config.onVisemes;
     this.onStatus = config.onStatus;
     this.onError = config.onError;
   }
@@ -175,6 +180,11 @@ export class VoiceAgentClient {
           };
           console.log(`${icons[msg.data] || ''} Status: ${msg.data}`);
           break;
+        case 'visemes':
+          if (Array.isArray(msg.data) && msg.data.length > 0) {
+            this.emit('visemes', msg.data);
+          }
+          break;
         case 'error':
           if (this.onError) this.onError(msg.data);
           console.error(`❌ Server error: ${msg.data}`);
@@ -191,11 +201,18 @@ export class VoiceAgentClient {
     if (event === 'audio') {
       if (this.onAudioCallback) this.onAudioCallback(data);
       this.audioListeners.forEach(l => l(data));
+    } else if (event === 'visemes') {
+      if (this.onVisemesCallback) this.onVisemesCallback(data);
+      this.visemeListeners.forEach(l => l(data));
     }
   }
 
   public onAudio(callback: (data: Uint8Array) => void) {
     this.audioListeners.push(callback);
+  }
+
+  public onVisemes(callback: (visemes: Viseme[]) => void) {
+    this.visemeListeners.push(callback);
   }
 
   /**

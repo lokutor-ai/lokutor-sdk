@@ -3,6 +3,7 @@ Configuration and constants for Lokutor Voice Agent
 """
 
 from enum import Enum
+from dataclasses import dataclass
 
 
 class VoiceStyle(str, Enum):
@@ -29,6 +30,14 @@ class Language(str, Enum):
     FRENCH = "fr"
     PORTUGUESE = "pt"
     KOREAN = "ko"
+
+
+@dataclass
+class Viseme:
+    """Viseme data for lip-sync animation"""
+    id: int
+    char: str
+    timestamp: float
 
 
 # Audio configuration
