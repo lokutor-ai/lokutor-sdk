@@ -40,11 +40,13 @@ export class VoiceAgentClient {
   private isConnected: boolean = false;
   private messages: Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> = [];
   private visemeListeners: ((visemes: Viseme[]) => void)[] = [];
+  private wantVisemes: boolean = false;
 
   constructor(config: LokutorConfig & {
     prompt: string,
     voice?: VoiceStyle,
     language?: Language,
+    visemes?: boolean,
     onVisemes?: (visemes: Viseme[]) => void,
   }) {
     this.apiKey = config.apiKey;
@@ -58,6 +60,7 @@ export class VoiceAgentClient {
     this.onVisemesCallback = config.onVisemes;
     this.onStatus = config.onStatus;
     this.onError = config.onError;
+    this.wantVisemes = config.visemes || false;
   }
 
   /**
@@ -119,8 +122,11 @@ export class VoiceAgentClient {
     this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
     this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
+    
+    // Enable/disable viseme extraction on backend if requested
+    this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
 
-    console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}`);
+    console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}, visemes=${this.wantVisemes}`);
   }
 
   /**

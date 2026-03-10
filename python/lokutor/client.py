@@ -129,6 +129,7 @@ class VoiceAgentClient:
         prompt: str,
         voice: VoiceStyle = VoiceStyle.F1,
         language: Language = Language.ENGLISH,
+        visemes: bool = False,
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
@@ -144,6 +145,7 @@ class VoiceAgentClient:
             prompt: System prompt for the AI agent
             voice: Voice style to use (VoiceStyle enum)
             language: Language for speech and text (Language enum)
+            visemes: Whether to enable viseme extraction for agent audio (default: False)
             on_transcription: Optional callback when user speech is transcribed
             on_response: Optional callback when agent text response is received
             on_audio: Optional callback when raw audio bytes are received
@@ -156,7 +158,7 @@ class VoiceAgentClient:
         self.voice = voice
         self.language = language
         self.server_url = DEFAULT_VOICE_AGENT_URL
-        self.want_visemes = False  # Enable via send_text(visemes=True)
+        self.want_visemes = visemes  # Set from constructor parameter
         
         # Callbacks
         self.on_transcription = on_transcription
@@ -228,31 +230,6 @@ class VoiceAgentClient:
         self.audio.stop()
         logger.info("Disconnected")
     
-    def send_text(self, text: str, visemes: bool = False) -> None:
-        """
-        Send a text message to the agent with optional viseme request
-        
-        Args:
-            text: The text message to send
-            visemes: Whether to request visemes for lip-sync animation
-        """
-        if not self.ws or not self.connected:
-            logger.error("Not connected to server")
-            return
-        
-        try:
-            message = {
-                "type": "text",
-                "data": text,
-                "visemes": visemes,
-            }
-            self.ws.send(json.dumps(message))
-            logger.debug(f"📨 Sent text: {text[:50]}...")
-        except Exception as e:
-            logger.error(f"Error sending text: {e}")
-            if self.on_error:
-                self.on_error(f"Failed to send text: {e}")
-    
     def update_prompt(self, new_prompt: str):
         """Update the system prompt mid-conversation"""
         self.prompt = new_prompt
@@ -264,19 +241,6 @@ class VoiceAgentClient:
                 logger.error(f"Error updating prompt: {e}")
         else:
             logger.warning("Not connected - prompt will be updated on next connection")
-    
-    def set_visemes_enabled(self, enabled: bool) -> None:
-        """
-        Enable/disable viseme requests for future text messages
-        
-        Args:
-            enabled: Whether to request visemes
-        """
-        self.want_visemes = enabled
-        if enabled:
-            logger.info("👁️  Visemes enabled")
-        else:
-            logger.info("👁️  Visemes disabled")
     
     def get_transcript(self) -> list:
         """Get full conversation transcript"""
@@ -351,7 +315,9 @@ class VoiceAgentClient:
             ws.send(json.dumps({"type": "voice", "data": self.voice.value}))
             # Set language
             ws.send(json.dumps({"type": "language", "data": self.language.value}))
-            logger.info(f"⚙️ Configured: voice={self.voice}, language={self.language}")
+            # Enable/disable viseme extraction on backend
+            ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
+            logger.info(f"⚙️ Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}")
         except Exception as e:
             logger.error(f"Error sending config: {e}")
 
@@ -416,12 +382,13 @@ class VoiceAgentClient:
                 elif msg_type == "visemes":
                     viseme_data = msg.get("data", [])
                     if viseme_data and self.on_visemes:
-                        # Convert to Viseme objects
+                        # Convert from wire format to Viseme objects
+                        # Wire format: {"v": index, "c": character, "t": timestamp}
                         visemes = [
                             Viseme(
-                                id=v.get("id"),
-                                char=v.get("char"),
-                                timestamp=v.get("timestamp")
+                                id=v.get("v"),           # character index in source text
+                                char=v.get("c"),         # character/phoneme
+                                timestamp=v.get("t")     # offset in seconds
                             )
                             for v in viseme_data
                         ]

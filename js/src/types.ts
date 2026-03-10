@@ -103,9 +103,10 @@ export interface VoiceAgentOptions {
 
 /**
  * Viseme data for lip-sync animation
+ * Format: {"v": index, "c": character, "t": timestamp}
  */
 export interface Viseme {
-  id: number;
-  char: string;
-  timestamp: number;
+  v: number;      // Character index in the source text
+  c: string;      // Character/phoneme being spoken
+  t: number;      // Offset in seconds from the start of the audio stream
 }
