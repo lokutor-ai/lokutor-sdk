@@ -6,6 +6,7 @@ import {
   SynthesizeOptions,
   Viseme,
 } from './types';
+import { BrowserAudioManager } from './browser-audio';
 
 // Browser-compatible base64 to Uint8Array
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -42,12 +43,22 @@ export class VoiceAgentClient {
   private visemeListeners: ((visemes: Viseme[]) => void)[] = [];
   private wantVisemes: boolean = false;
 
+  private audioManager: BrowserAudioManager | null = null;
+  private enableAudio: boolean = false;
+
+  // Connection resilience
+  private isUserDisconnect: boolean = false;
+  private reconnecting: boolean = false;
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 5;
+
   constructor(config: LokutorConfig & {
     prompt: string,
     voice?: VoiceStyle,
     language?: Language,
     visemes?: boolean,
     onVisemes?: (visemes: Viseme[]) => void,
+    enableAudio?: boolean,
   }) {
     this.apiKey = config.apiKey;
     this.prompt = config.prompt;
@@ -61,12 +72,22 @@ export class VoiceAgentClient {
     this.onStatus = config.onStatus;
     this.onError = config.onError;
     this.wantVisemes = config.visemes || false;
+    this.enableAudio = config.enableAudio ?? false;
   }
 
   /**
    * Connect to the Lokutor Voice Agent server
    */
   public async connect(): Promise<boolean> {
+    this.isUserDisconnect = false;
+
+    if (this.enableAudio) {
+      if (!this.audioManager) {
+        this.audioManager = new BrowserAudioManager();
+      }
+      await this.audioManager.init();
+    }
+
     return new Promise((resolve, reject) => {
       try {
         let url = DEFAULT_URLS.VOICE_AGENT;
@@ -80,10 +101,21 @@ export class VoiceAgentClient {
         this.ws = new WebSocket(url);
         this.ws.binaryType = 'arraybuffer';
 
-        this.ws.onopen = () => {
+        this.ws.onopen = async () => {
           this.isConnected = true;
+          this.reconnectAttempts = 0;
+          this.reconnecting = false;
           console.log('✅ Connected to voice agent!');
           this.sendConfig();
+
+          if (this.audioManager) {
+            await this.audioManager.startMicrophone((data) => {
+              if (this.isConnected) {
+                this.sendAudio(data);
+              }
+            });
+          }
+
           resolve(true);
         };
 
@@ -103,7 +135,22 @@ export class VoiceAgentClient {
 
         this.ws.onclose = () => {
           this.isConnected = false;
-          console.log('Disconnected');
+          if (!this.isUserDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnecting = true;
+            this.reconnectAttempts++;
+            const backoffDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
+
+            console.warn(`Connection lost. Reconnecting in ${backoffDelay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+            if (this.onStatus) this.onStatus('reconnecting');
+
+            setTimeout(() => {
+              this.connect().catch(e => console.error("Reconnect failed", e));
+            }, backoffDelay);
+          } else {
+            console.log('Disconnected');
+            if (this.onStatus) this.onStatus('disconnected');
+          }
         };
 
       } catch (err) {
@@ -122,7 +169,7 @@ export class VoiceAgentClient {
     this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
     this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
-    
+
     // Enable/disable viseme extraction on backend if requested
     this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
 
@@ -134,7 +181,7 @@ export class VoiceAgentClient {
    * @param audioData Int16 PCM audio buffer
    */
   public sendAudio(audioData: Uint8Array) {
-    if (this.ws && this.isConnected) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
       this.ws.send(audioData);
     }
   }
@@ -143,6 +190,9 @@ export class VoiceAgentClient {
    * Handle incoming binary data (audio response)
    */
   private handleBinaryMessage(data: Uint8Array) {
+    if (this.audioManager) {
+      this.audioManager.playAudio(data);
+    }
     this.emit('audio', data);
   }
 
@@ -167,7 +217,7 @@ export class VoiceAgentClient {
             text: msg.data,
             timestamp: Date.now()
           });
-          
+
           if (msg.role === 'user') {
             if (this.onTranscription) this.onTranscription(msg.data);
             console.log(`💬 You: ${msg.data}`);
@@ -177,6 +227,9 @@ export class VoiceAgentClient {
           }
           break;
         case 'status':
+          if (msg.data === 'interrupted' && this.audioManager) {
+            this.audioManager.stopPlayback();
+          }
           if (this.onStatus) this.onStatus(msg.data);
           const icons: Record<string, string> = {
             'interrupted': '⚡',
@@ -225,10 +278,38 @@ export class VoiceAgentClient {
    * Disconnect from the server
    */
   public disconnect() {
+    this.isUserDisconnect = true;
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+    if (this.audioManager) {
+      this.audioManager.cleanup();
+    }
+    this.isConnected = false;
+  }
+
+  /**
+   * Toggles the microphone mute state (if managed by client)
+   * returns the new mute state
+   */
+  public toggleMute(): boolean {
+    if (this.audioManager) {
+      const isMuted = this.audioManager.isMicMuted();
+      this.audioManager.setMuted(!isMuted);
+      return !isMuted;
+    }
+    return false;
+  }
+
+  /**
+   * Gets the microphone volume amplitude 0-1 (if managed by client)
+   */
+  public getAmplitude(): number {
+    if (this.audioManager) {
+      return this.audioManager.getAmplitude();
+    }
+    return 0;
   }
 
   /**

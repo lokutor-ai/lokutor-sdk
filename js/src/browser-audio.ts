@@ -1,5 +1,5 @@
 import { AUDIO_CONFIG } from './types';
-import { float32ToPcm16, pcm16ToFloat32, resampleWithAntiAliasing, calculateRMS } from './audio-utils';
+import { float32ToPcm16, pcm16ToFloat32, StreamResampler, calculateRMS } from './audio-utils';
 
 /**
  * Configuration for browser audio handling
@@ -31,6 +31,7 @@ export class BrowserAudioManager {
   private scriptProcessor: ScriptProcessorNode | null = null;
   private analyserNode: AnalyserNode | null = null;
   private mediaStream: MediaStream | null = null;
+  private resampler: StreamResampler | null = null;
 
   // Playback scheduling
   private nextPlaybackTime: number = 0;
@@ -138,6 +139,14 @@ export class BrowserAudioManager {
         this.mediaStreamAudioSourceNode.connect(this.analyserNode);
       }
 
+      // Initialize stateful resampler if sample rates differ
+      const hardwareRate = this.audioContext!.sampleRate;
+      if (hardwareRate !== this.inputSampleRate) {
+        this.resampler = new StreamResampler(hardwareRate, this.inputSampleRate);
+      } else {
+        this.resampler = null;
+      }
+
       // Handle audio processing
       this.scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
         this._processAudioInput(event);
@@ -168,17 +177,13 @@ export class BrowserAudioManager {
     }
 
     // Resample from hardware rate to target rate if needed
-    const hardwareRate = this.audioContext.sampleRate;
-    // Convert to a standard Float32Array to ensure buffer compatibility
     let processedData: Float32Array = new Float32Array(inputData);
 
-    if (hardwareRate !== this.inputSampleRate) {
-      processedData = resampleWithAntiAliasing(
-        processedData,
-        hardwareRate,
-        this.inputSampleRate
-      );
+    if (this.resampler) {
+      processedData = this.resampler.process(processedData);
     }
+
+    if (processedData.length === 0) return; // Need more data for resampler
 
     // Convert Float32 to Int16 PCM
     const int16Data = float32ToPcm16(processedData);
