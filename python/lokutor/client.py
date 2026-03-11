@@ -130,10 +130,12 @@ class VoiceAgentClient:
         voice: VoiceStyle = VoiceStyle.F1,
         language: Language = Language.ENGLISH,
         visemes: bool = False,
+        tools: Optional[list] = None,
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
         on_visemes: Optional[Callable[[list], None]] = None,
+        on_tool_call: Optional[Callable[[str, str], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -165,6 +167,7 @@ class VoiceAgentClient:
         self.on_response = on_response
         self.on_audio = on_audio
         self.on_visemes = on_visemes
+        self.on_tool_call = on_tool_call
         self.on_status = on_status
         self.on_error = on_error
         
@@ -173,6 +176,8 @@ class VoiceAgentClient:
         self.connected = False
         self.stop_conversation = False
         self.audio = _AudioIO()
+        self.tools = tools or []
+        self.current_generation = 0
         
         # Message history
         self.messages = []  # List of {"role": "user"|"agent", "text": "...", "timestamp": ...}
@@ -317,7 +322,10 @@ class VoiceAgentClient:
             ws.send(json.dumps({"type": "language", "data": self.language.value}))
             # Enable/disable viseme extraction on backend
             ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
-            logger.info(f"⚙️ Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}")
+            # Send tools
+            if self.tools:
+                ws.send(json.dumps({"type": "tools", "data": self.tools}))
+            logger.info(f"⚙️ Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}, tools={len(self.tools)}")
         except Exception as e:
             logger.error(f"Error sending config: {e}")
 
@@ -337,11 +345,16 @@ class VoiceAgentClient:
                 msg_type = msg.get("type")
 
                 if msg_type == "audio":
-                    # Backward compatibility for JSON audio
-                    audio_data = base64.b64decode(msg["data"])
-                    if self.on_audio:
-                        self.on_audio(audio_data)
-                    self.audio.write(audio_data)
+                    gen = msg.get("generation", 0)
+                    if gen < self.current_generation:
+                        return
+                    
+                    data_str = msg.get("data")
+                    if data_str:
+                        audio_data = base64.b64decode(data_str)
+                        if self.on_audio:
+                            self.on_audio(audio_data)
+                        self.audio.write(audio_data)
                     return
 
                 elif msg_type == "transcript":
@@ -373,7 +386,11 @@ class VoiceAgentClient:
                         logger.info("⚡ Interrupted")
                         self.audio.clear_output()
                     elif status == "thinking":
-                        logger.info("🧠 Thinking...")
+                        new_gen = msg.get("generation", 0)
+                        if new_gen > self.current_generation:
+                            self.current_generation = new_gen
+                            self.audio.clear_output()
+                        logger.info(f"🧠 Thinking... (Gen {self.current_generation})")
                     elif status == "speaking":
                         logger.info("🔊 Agent speaking...")
                     elif status == "listening":
@@ -384,7 +401,7 @@ class VoiceAgentClient:
                     if viseme_data and self.on_visemes:
                         # Convert from wire format to Viseme objects
                         # Wire format: {"v": index, "c": character, "t": timestamp}
-                        visemes = [
+                        vis_objs = [
                             Viseme(
                                 id=v.get("v"),           # character index in source text
                                 char=v.get("c"),         # character/phoneme
@@ -392,8 +409,15 @@ class VoiceAgentClient:
                             )
                             for v in viseme_data
                         ]
-                        self.on_visemes(visemes)
-                        logger.debug(f"👁️ Received {len(visemes)} visemes")
+                        self.on_visemes(vis_objs)
+                        logger.debug(f"👁️ Received {len(vis_objs)} visemes")
+
+                elif msg_type == "tool_call":
+                    name = msg.get("name")
+                    args = msg.get("arguments")
+                    if self.on_tool_call:
+                        self.on_tool_call(name, args)
+                    logger.info(f"🛠️ Tool Call: {name}({args})")
 
                 elif msg_type == "error":
                     err_data = msg.get("data")

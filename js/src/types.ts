@@ -110,3 +110,27 @@ export interface Viseme {
   c: string;      // Character/phoneme being spoken
   t: number;      // Offset in seconds from the start of the audio stream
 }
+
+/**
+ * Tool definition for LLM function calling (OpenAI format)
+ */
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, any>;
+      required?: string[];
+    };
+  };
+}
+
+/**
+ * Event data for tool execution
+ */
+export interface ToolCall {
+  name: string;
+  arguments: string;
+}

@@ -5,6 +5,8 @@ import {
   LokutorConfig,
   SynthesizeOptions,
   Viseme,
+  ToolDefinition,
+  ToolCall,
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
 
@@ -29,6 +31,7 @@ export class VoiceAgentClient {
   public prompt: string;
   public voice: VoiceStyle;
   public language: Language;
+  public tools: ToolDefinition[] = [];
 
   // Callbacks
   private onTranscription?: (text: string) => void;
@@ -45,6 +48,7 @@ export class VoiceAgentClient {
 
   private audioManager: BrowserAudioManager | null = null;
   private enableAudio: boolean = false;
+  private currentGeneration: number = 0;
 
   // Connection resilience
   private isUserDisconnect: boolean = false;
@@ -59,6 +63,7 @@ export class VoiceAgentClient {
     visemes?: boolean,
     onVisemes?: (visemes: Viseme[]) => void,
     enableAudio?: boolean,
+    tools?: ToolDefinition[],
   }) {
     this.apiKey = config.apiKey;
     this.prompt = config.prompt;
@@ -73,6 +78,7 @@ export class VoiceAgentClient {
     this.onError = config.onError;
     this.wantVisemes = config.visemes || false;
     this.enableAudio = config.enableAudio ?? false;
+    this.tools = config.tools || [];
   }
 
   /**
@@ -173,7 +179,11 @@ export class VoiceAgentClient {
     // Enable/disable viseme extraction on backend if requested
     this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
 
-    console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}, visemes=${this.wantVisemes}`);
+    if (this.tools && this.tools.length > 0) {
+      this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
+    }
+
+    console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}, visemes=${this.wantVisemes}, tools=${this.tools.length}`);
   }
 
   /**
@@ -189,7 +199,11 @@ export class VoiceAgentClient {
   /**
    * Handle incoming binary data (audio response)
    */
-  private handleBinaryMessage(data: Uint8Array) {
+  private handleBinaryMessage(data: Uint8Array, generation?: number) {
+    if (generation !== undefined && generation < this.currentGeneration) {
+      console.log(`🗑️ Discarding ghost audio (Gen ${generation} < ${this.currentGeneration})`);
+      return;
+    }
     if (this.audioManager) {
       this.audioManager.playAudio(data);
     }
@@ -206,7 +220,7 @@ export class VoiceAgentClient {
         case 'audio':
           if (msg.data) {
             const buffer = base64ToUint8Array(msg.data);
-            this.handleBinaryMessage(buffer);
+            this.handleBinaryMessage(buffer, msg.generation);
           }
           break;
         case 'transcript':
@@ -227,6 +241,14 @@ export class VoiceAgentClient {
           }
           break;
         case 'status':
+          if (msg.data === 'thinking') {
+            const newGen = msg.generation || 0;
+            if (newGen > this.currentGeneration) {
+              console.log(`🧠 New thought (Gen ${newGen}) - Clearing audio queue`);
+              this.currentGeneration = newGen;
+              if (this.audioManager) this.audioManager.stopPlayback();
+            }
+          }
           if (msg.data === 'interrupted' && this.audioManager) {
             this.audioManager.stopPlayback();
           }
@@ -247,6 +269,9 @@ export class VoiceAgentClient {
         case 'error':
           if (this.onError) this.onError(msg.data);
           console.error(`❌ Server error: ${msg.data}`);
+          break;
+        case 'tool_call':
+          console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
           break;
       }
     } catch (e) {
