@@ -10,6 +10,21 @@ import {
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
 
+/**
+ * Interface for audio hardware management (Browser/Node parity)
+ */
+export interface AudioManager {
+  init(): Promise<void>;
+  startMicrophone(onAudioInput: (pcm16Data: Uint8Array) => void): Promise<void>;
+  stopMicrophone(): void;
+  playAudio(pcm16Data: Uint8Array): void;
+  stopPlayback(): void;
+  cleanup(): void;
+  isMicMuted(): boolean;
+  setMuted(muted: boolean): void;
+  getAmplitude(): number;
+}
+
 // Browser-compatible base64 to Uint8Array
 function base64ToUint8Array(base64: string): Uint8Array {
   const binaryString = atob(base64);
@@ -46,9 +61,10 @@ export class VoiceAgentClient {
   private visemeListeners: ((visemes: Viseme[]) => void)[] = [];
   private wantVisemes: boolean = false;
 
-  private audioManager: BrowserAudioManager | null = null;
+  private audioManager: AudioManager | null = null;
   private enableAudio: boolean = false;
   private currentGeneration: number = 0;
+  private listeners: Record<string, Function[]> = {};
 
   // Connection resilience
   private isUserDisconnect: boolean = false;
@@ -83,15 +99,21 @@ export class VoiceAgentClient {
 
   /**
    * Connect to the Lokutor Voice Agent server
+   * @param customAudioManager Optional replacement for the default audio hardware handler
    */
-  public async connect(): Promise<boolean> {
+  public async connect(customAudioManager?: AudioManager): Promise<boolean> {
     this.isUserDisconnect = false;
 
-    if (this.enableAudio) {
-      if (!this.audioManager) {
+    if (this.enableAudio || customAudioManager) {
+      if (customAudioManager) {
+        this.audioManager = customAudioManager;
+      } else if (!this.audioManager && typeof window !== 'undefined') {
         this.audioManager = new BrowserAudioManager();
       }
-      await this.audioManager.init();
+      
+      if (this.audioManager) {
+        await this.audioManager.init();
+      }
     }
 
     return new Promise((resolve, reject) => {
@@ -164,6 +186,40 @@ export class VoiceAgentClient {
         reject(err);
       }
     });
+  }
+
+  /**
+   * The "Golden Path" - Starts a managed session with hardware handled automatically.
+   * This is the recommended way to start a conversation in both Browser and Node.js.
+   */
+  public async startManaged(config?: { audioManager?: AudioManager }): Promise<this> {
+    this.enableAudio = true;
+    if (config?.audioManager) {
+      this.audioManager = config.audioManager;
+    } else if (!this.audioManager) {
+      if (typeof window !== 'undefined') {
+        this.audioManager = new BrowserAudioManager();
+      } else {
+        try {
+          // Node-specific managed playback
+          const { NodeAudioManager } = await import('./node-audio.js');
+          this.audioManager = new NodeAudioManager() as unknown as AudioManager;
+        } catch (e) {
+          console.error('❌ Failed to load NodeAudioManager. Please ensure "speaker" and "node-record-lpcm16" are installed.');
+        }
+      }
+    }
+    
+    await this.connect();
+    
+    // Auto-start microphone if audio management is available
+    if (this.audioManager && this.isConnected) {
+      await this.audioManager.startMicrophone((data) => {
+        this.sendAudio(data);
+      });
+    }
+    
+    return this;
   }
 
   /**
@@ -279,24 +335,58 @@ export class VoiceAgentClient {
     }
   }
 
-  private audioListeners: ((data: Uint8Array) => void)[] = [];
+  /**
+   * Register an event listener (for Python parity)
+   */
+  public on(event: string, callback: Function): this {
+    if (!this.listeners[event]) {
+      this.listeners[event] = [];
+    }
+    this.listeners[event].push(callback);
+    return this;
+  }
 
-  private emit(event: string, data: any) {
-    if (event === 'audio') {
-      if (this.onAudioCallback) this.onAudioCallback(data);
-      this.audioListeners.forEach(l => l(data));
-    } else if (event === 'visemes') {
-      if (this.onVisemesCallback) this.onVisemesCallback(data);
-      this.visemeListeners.forEach(l => l(data));
+  /**
+   * Internal emitter for all events
+   */
+  private emit(event: string, ...args: any[]) {
+    // Legacy property-style callbacks
+    const legacyMap: Record<string, string> = {
+      'transcription': 'onTranscription',
+      'response': 'onResponse',
+      'audio': 'onAudioCallback',
+      'visemes': 'onVisemesCallback',
+      'status': 'onStatus',
+      'error': 'onError',
+    };
+
+    const legacyKey = legacyMap[event];
+    if (legacyKey && (this as any)[legacyKey]) {
+      try {
+        (this as any)[legacyKey](...args);
+      } catch (e) {
+        console.error(`Error in legacy callback ${legacyKey}:`, e);
+      }
+    }
+
+    // New style listeners
+    if (this.listeners[event]) {
+      this.listeners[event].forEach(cb => {
+        try {
+          cb(...args);
+        } catch (e) {
+          console.error(`Error in listener for ${event}:`, e);
+        }
+      });
     }
   }
 
   public onAudio(callback: (data: Uint8Array) => void) {
-    this.audioListeners.push(callback);
+    this.on('audio', callback);
   }
 
   public onVisemes(callback: (visemes: Viseme[]) => void) {
-    this.visemeListeners.push(callback);
+    this.on('visemes', callback);
   }
 
   /**
@@ -398,9 +488,24 @@ export class TTSClient {
     visemes?: boolean;
     onAudio?: (data: Uint8Array) => void;
     onVisemes?: (visemes: any[]) => void;
+    onTTFB?: (ms: number) => void;
     onError?: (error: any) => void;
   }): Promise<void> {
     return new Promise((resolve, reject) => {
+      let activityTimeout: any;
+      let ws: WebSocket;
+      let startTime: number;
+      let firstByteReceived = false;
+
+      const refreshTimeout = () => {
+        if (activityTimeout) clearTimeout(activityTimeout);
+        activityTimeout = setTimeout(() => {
+          console.log("⏱️ TTS synthesis reached inactivity timeout (2s) - resolving");
+          if (ws) ws.close();
+          resolve();
+        }, 2000);
+      };
+
       try {
         let url = DEFAULT_URLS.TTS;
         if (this.apiKey) {
@@ -408,10 +513,11 @@ export class TTSClient {
           url += `${separator}api_key=${this.apiKey}`;
         }
 
-        const ws = new WebSocket(url);
+        ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
+          refreshTimeout();
           const req = {
             text: options.text,
             voice: options.voice || VoiceStyle.F1,
@@ -421,16 +527,29 @@ export class TTSClient {
             visemes: options.visemes || false
           };
           ws.send(JSON.stringify(req));
+          startTime = Date.now();
         };
 
         ws.onmessage = async (event) => {
+          refreshTimeout();
           if (event.data instanceof ArrayBuffer) {
+            if (!firstByteReceived) {
+              const ttfb = Date.now() - startTime;
+              if (options.onTTFB) options.onTTFB(ttfb);
+              firstByteReceived = true;
+            }
             if (options.onAudio) options.onAudio(new Uint8Array(event.data));
           } else {
             try {
               const msg = JSON.parse(event.data.toString());
               if (Array.isArray(msg) && options.onVisemes) {
                 options.onVisemes(msg);
+              }
+              // Check for manual EOS from server
+              if (msg.type === 'eos') {
+                if (activityTimeout) clearTimeout(activityTimeout);
+                ws.close();
+                resolve();
               }
             } catch (e) {
               // Ignore non-JSON or other messages
@@ -439,15 +558,18 @@ export class TTSClient {
         };
 
         ws.onerror = (err) => {
+          if (activityTimeout) clearTimeout(activityTimeout);
           if (options.onError) options.onError(err);
           reject(err);
         };
 
         ws.onclose = () => {
+          if (activityTimeout) clearTimeout(activityTimeout);
           resolve();
         };
 
       } catch (err) {
+        if (activityTimeout) clearTimeout(activityTimeout);
         if (options.onError) options.onError(err);
         reject(err);
       }

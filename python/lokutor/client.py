@@ -94,6 +94,14 @@ class _AudioIO:
             except queue.Empty:
                 break
 
+    def wait_until_finished(self):
+        """Wait until all queued audio has been played"""
+        if self.playback_thread and self.playback_thread.is_alive():
+            # Wait for queue to be empty and all tasks done
+            self.playback_queue.join()
+            # Small buffer for hardware latency
+            time.sleep(0.3)
+
     def stop(self):
         self.stop_playback.set()
         if self.playback_thread:
@@ -126,11 +134,12 @@ class VoiceAgentClient:
     def __init__(
         self,
         api_key: str,
-        prompt: str,
+        prompt: str = "You are a helpful AI assistant",
         voice: VoiceStyle = VoiceStyle.F1,
         language: Language = Language.ENGLISH,
         visemes: bool = False,
         tools: Optional[list] = None,
+        # Property-style callbacks (legacy support)
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
@@ -181,6 +190,34 @@ class VoiceAgentClient:
         
         # Message history
         self.messages = []  # List of {"role": "user"|"agent", "text": "...", "timestamp": ...}
+        self._listeners = {}
+
+    def on(self, event: str, callback: Callable):
+        """Register an event listener (for JS parity)"""
+        if event not in self._listeners:
+            self._listeners[event] = []
+        self._listeners[event].append(callback)
+        return self
+
+    def _emit(self, event: str, *args, **kwargs):
+        """Emit an event to all registered listeners"""
+        # Call legacy property callbacks first
+        legacy_attr = f"on_{event}"
+        if hasattr(self, legacy_attr):
+            cb = getattr(self, legacy_attr)
+            if cb:
+                try:
+                    cb(*args, **kwargs)
+                except Exception as e:
+                    logger.error(f"Error in legacy callback {legacy_attr}: {e}")
+
+        # Call new .on() listeners
+        if event in self._listeners:
+            for cb in self._listeners[event]:
+                try:
+                    cb(*args, **kwargs)
+                except Exception as e:
+                    logger.error(f"Error in listener for {event}: {e}")
 
     def connect(self) -> bool:
         """
@@ -334,8 +371,7 @@ class VoiceAgentClient:
         try:
             # Handle binary audio frames
             if isinstance(message, bytes):
-                if self.on_audio:
-                    self.on_audio(message)
+                self._emit("audio", message)
                 self.audio.write(message)
                 return
 
@@ -352,8 +388,7 @@ class VoiceAgentClient:
                     data_str = msg.get("data")
                     if data_str:
                         audio_data = base64.b64decode(data_str)
-                        if self.on_audio:
-                            self.on_audio(audio_data)
+                        self._emit("audio", audio_data)
                         self.audio.write(audio_data)
                     return
 
@@ -369,18 +404,15 @@ class VoiceAgentClient:
                     })
                     
                     if role == "user":
-                        if self.on_transcription:
-                            self.on_transcription(transcript)
+                        self._emit("transcription", transcript)
                         logger.info(f"💬 You: {transcript}")
                     else:
-                        if self.on_response:
-                            self.on_response(transcript)
+                        self._emit("response", transcript)
                         logger.info(f"🤖 Agent: {transcript}")
 
                 elif msg_type == "status":
                     status = msg.get("data")
-                    if self.on_status:
-                        self.on_status(status)
+                    self._emit("status", status)
                         
                     if status == "interrupted":
                         logger.info("⚡ Interrupted")
@@ -398,32 +430,28 @@ class VoiceAgentClient:
 
                 elif msg_type == "visemes":
                     viseme_data = msg.get("data", [])
-                    if viseme_data and self.on_visemes:
-                        # Convert from wire format to Viseme objects
-                        # Wire format: {"v": index, "c": character, "t": timestamp}
-                        vis_objs = [
-                            Viseme(
-                                id=v.get("v"),           # character index in source text
-                                char=v.get("c"),         # character/phoneme
-                                timestamp=v.get("t")     # offset in seconds
-                            )
-                            for v in viseme_data
-                        ]
-                        self.on_visemes(vis_objs)
-                        logger.debug(f"👁️ Received {len(vis_objs)} visemes")
+                    # Convert from wire format to Viseme objects
+                    vis_objs = [
+                        Viseme(
+                            id=v.get("v"),
+                            char=v.get("c"),
+                            timestamp=v.get("t")
+                        )
+                        for v in viseme_data
+                    ]
+                    self._emit("visemes", vis_objs)
+                    logger.debug(f"👁️ Received {len(vis_objs)} visemes")
 
                 elif msg_type == "tool_call":
                     name = msg.get("name")
                     args = msg.get("arguments")
-                    if self.on_tool_call:
-                        self.on_tool_call(name, args)
+                    self._emit("tool_call", name, args)
                     logger.info(f"🛠️ Tool Call: {name}({args})")
 
                 elif msg_type == "error":
                     err_data = msg.get("data")
                     logger.error(f"❌ Server error: {err_data}")
-                    if self.on_error:
-                        self.on_error(err_data)
+                    self._emit("error", err_data)
 
         except Exception as e:
             logger.error(f"Message handling error: {e}")
@@ -464,6 +492,7 @@ class TTSClient:
         visemes: bool = False,
         on_audio: Optional[Callable[[bytes], None]] = None,
         on_visemes: Optional[Callable[[list], None]] = None,
+        on_ttfb: Optional[Callable[[float], None]] = None,
         play: bool = True,
         block: bool = True
     ):
@@ -482,6 +511,12 @@ class TTSClient:
             play: Whether to play the audio immediately
             block: Whether to wait for playback to finish
         """
+        finished_event = Event()
+        state = {
+            "start_time": 0.0,
+            "first_byte_received": False
+        }
+
         def on_open(ws):
             req = {
                 "text": text,
@@ -492,9 +527,16 @@ class TTSClient:
                 "visemes": visemes
             }
             ws.send(json.dumps(req))
+            state["start_time"] = time.time()
 
         def on_message(ws, message):
             if isinstance(message, bytes):
+                if not state["first_byte_received"]:
+                    ttfb = (time.time() - state["start_time"]) * 1000  # in ms
+                    if on_ttfb:
+                        on_ttfb(ttfb)
+                    state["first_byte_received"] = True
+                
                 if on_audio:
                     on_audio(message)
                 if play:
@@ -504,11 +546,18 @@ class TTSClient:
                     data = json.loads(message)
                     if isinstance(data, list) and on_visemes:
                         on_visemes(data)
+                    if isinstance(data, dict) and data.get("type") == "eos":
+                        ws.close()
                 except:
                     logger.debug(f"TTS Server message: {message}")
 
         def on_error(ws, error):
             logger.error(f"TTS WebSocket error: {error}")
+            finished_event.set()
+
+        def on_close(ws, *args):
+            logger.debug("TTS connection closed")
+            finished_event.set()
 
         if play:
             self.audio.start_output()
@@ -520,18 +569,22 @@ class TTSClient:
             on_open=on_open,
             on_message=on_message,
             on_error=on_error,
+            on_close=on_close,
         )
         
         ws_thread = Thread(target=ws.run_forever, daemon=True)
         ws_thread.start()
 
-        if play and block:
-            # Wait for the playback queue to be empty
-            time.sleep(1.0) # Initial wait
-            while not self.audio.playback_queue.empty():
-                time.sleep(0.1)
-            time.sleep(0.5)
-            self.audio.stop()
+        if block:
+            # First wait for the stream to finish (socket close)
+            # Use a timeout as safety
+            finished_event.wait(timeout=30.0)
+            
+            if play:
+                # Then wait for the audio hardware to finish playing what it received
+                self.audio.wait_until_finished()
+                self.audio.stop()
+            
             ws.close()
         
         return ws
