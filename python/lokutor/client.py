@@ -227,7 +227,7 @@ class VoiceAgentClient:
             True if connected successfully, False otherwise
         """
         try:
-            logger.info(f"🔗 Connecting to {self.server_url}...")
+            logger.info(f"Connecting to {self.server_url}...")
             
             # Add API key to headers for authentication
             headers = []
@@ -251,11 +251,10 @@ class VoiceAgentClient:
             for i in range(CONNECTION_TIMEOUT * 2):
                 time.sleep(0.5)
                 if self.connected:
-                    logger.info("✅ Connected to voice agent!")
+                    logger.info("Connected to voice agent!")
                     return True
             
-            logger.error(f"❌ Connection timeout after {CONNECTION_TIMEOUT}s")
-            logger.error("Make sure server is running: go run cmd/server/main.go")
+            logger.error(f"Connection timeout after {CONNECTION_TIMEOUT}s")
             return False
             
         except Exception as e:
@@ -278,7 +277,7 @@ class VoiceAgentClient:
         if self.ws and self.connected:
             try:
                 self.ws.send(json.dumps({"type": "prompt", "data": new_prompt}))
-                logger.info(f"⚙️ Updated prompt: {new_prompt[:50]}...")
+                logger.info(f"Updated prompt: {new_prompt[:50]}...")
             except Exception as e:
                 logger.error(f"Error updating prompt: {e}")
         else:
@@ -305,13 +304,13 @@ class VoiceAgentClient:
         self.stop_conversation = False
         
         try:
-            logger.info("🎤 Starting conversation... Speak whenever you're ready")
+            logger.info("Starting conversation... Speak whenever you're ready")
             self.audio.start_input()
             self.audio.start_output()
             self._run_conversation_loop()
             
         except KeyboardInterrupt:
-            logger.info("\n👋 Conversation ended")
+            logger.info("Conversation ended")
         finally:
             self.audio.stop()
 
@@ -347,7 +346,7 @@ class VoiceAgentClient:
     def _on_open(self, ws):
         """WebSocket opened"""
         self.connected = True
-        logger.info("✅ WebSocket connected")
+        logger.info("WebSocket connected")
         
         # Send initial configuration
         try:
@@ -362,7 +361,7 @@ class VoiceAgentClient:
             # Send tools
             if self.tools:
                 ws.send(json.dumps({"type": "tools", "data": self.tools}))
-            logger.info(f"⚙️ Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}, tools={len(self.tools)}")
+            logger.info(f"Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}, tools={len(self.tools)}")
         except Exception as e:
             logger.error(f"Error sending config: {e}")
 
@@ -405,28 +404,28 @@ class VoiceAgentClient:
                     
                     if role == "user":
                         self._emit("transcription", transcript)
-                        logger.info(f"💬 You: {transcript}")
+                        logger.info(f"You: {transcript}")
                     else:
                         self._emit("response", transcript)
-                        logger.info(f"🤖 Agent: {transcript}")
+                        logger.info(f"Agent: {transcript}")
 
                 elif msg_type == "status":
                     status = msg.get("data")
                     self._emit("status", status)
                         
                     if status == "interrupted":
-                        logger.info("⚡ Interrupted")
+                        logger.info("Interrupted")
                         self.audio.clear_output()
                     elif status == "thinking":
                         new_gen = msg.get("generation", 0)
                         if new_gen > self.current_generation:
                             self.current_generation = new_gen
                             self.audio.clear_output()
-                        logger.info(f"🧠 Thinking... (Gen {self.current_generation})")
+                        logger.info(f"Thinking... (Gen {self.current_generation})")
                     elif status == "speaking":
-                        logger.info("🔊 Agent speaking...")
+                        logger.info("Agent speaking...")
                     elif status == "listening":
-                        logger.info("👂 Listening...")
+                        logger.info("Listening...")
 
                 elif msg_type == "visemes":
                     viseme_data = msg.get("data", [])
@@ -440,17 +439,17 @@ class VoiceAgentClient:
                         for v in viseme_data
                     ]
                     self._emit("visemes", vis_objs)
-                    logger.debug(f"👁️ Received {len(vis_objs)} visemes")
+                    logger.debug(f"Received {len(vis_objs)} visemes")
 
                 elif msg_type == "tool_call":
                     name = msg.get("name")
                     args = msg.get("arguments")
                     self._emit("tool_call", name, args)
-                    logger.info(f"🛠️ Tool Call: {name}({args})")
+                    logger.info(f"Tool Call: {name}({args})")
 
                 elif msg_type == "error":
                     err_data = msg.get("data")
-                    logger.error(f"❌ Server error: {err_data}")
+                    logger.error(f"Server error: {err_data}")
                     self._emit("error", err_data)
 
         except Exception as e:
@@ -458,7 +457,7 @@ class VoiceAgentClient:
 
     def _on_error(self, ws, error):
         """WebSocket error"""
-        logger.error(f"❌ WebSocket error: {error}")
+        logger.error(f"WebSocket error: {error}")
         self.connected = False
         if self.on_error:
             self.on_error(str(error))
