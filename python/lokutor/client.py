@@ -541,14 +541,20 @@ class TTSClient:
                 if play:
                     self.audio.write(message)
             elif isinstance(message, str):
+                if message == "EOS":
+                    ws.close()
+                    return
+
                 try:
                     data = json.loads(message)
                     if isinstance(data, list) and on_visemes:
                         on_visemes(data)
                     if isinstance(data, dict) and data.get("type") == "eos":
                         ws.close()
-                except:
+                except json.JSONDecodeError:
                     logger.debug(f"TTS Server message: {message}")
+                except Exception as e:
+                    logger.error(f"Error handling message: {e}")
 
         def on_error(ws, error):
             logger.error(f"TTS WebSocket error: {error}")
