@@ -248,7 +248,7 @@ export class VoiceAgentClient {
    */
   public sendAudio(audioData: Uint8Array) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
-      this.ws.send(audioData);
+      this.ws.send(audioData as any);
     }
   }
 
@@ -540,8 +540,17 @@ export class TTSClient {
             }
             if (options.onAudio) options.onAudio(new Uint8Array(event.data));
           } else {
+            const text = event.data.toString();
+            
+            if (text === 'EOS') {
+              if (activityTimeout) clearTimeout(activityTimeout);
+              ws.close();
+              resolve();
+              return;
+            }
+
             try {
-              const msg = JSON.parse(event.data.toString());
+              const msg = JSON.parse(text);
               if (Array.isArray(msg) && options.onVisemes) {
                 options.onVisemes(msg);
               }
