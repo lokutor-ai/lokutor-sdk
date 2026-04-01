@@ -18,6 +18,8 @@ setup(
         "websocket-client>=1.0.0,<2.0.0",
         "pyaudio>=0.2.13",
         "python-dotenv>=1.0.0",
+        "numpy>=1.24.4",
+        "scipy>=1.10.1",
     ],
     extras_require={
         "dev": [

@@ -148,3 +148,5 @@ secrets.json
 
 # Windows
 Thumbs.db
+
+uv.lock
