@@ -230,6 +230,11 @@ export class BrowserAudioManager {
       return;
     }
 
+    if (pcm16Data.length % 2 !== 0) {
+      console.warn(`Discarding odd-length PCM buffer (${pcm16Data.length} bytes)`);
+      return;
+    }
+
     // Convert Int16 to Float32
     const int16Array = new Int16Array(
       pcm16Data.buffer,

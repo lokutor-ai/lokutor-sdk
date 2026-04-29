@@ -1,0 +1,158 @@
+Lokutor JS SDK API Reference
+
+Package
+- @lokutor/sdk
+
+Main exports
+- VoiceAgentClient
+- TTSClient
+- BrowserAudioManager
+- VoiceStyle
+- Language
+- audio utils
+
+VoiceStyle enum
+- F1, F2, F3, F4, F5
+- M1, M2, M3, M4, M5
+
+Language enum
+- ENGLISH: en
+- SPANISH: es
+- FRENCH: fr
+- PORTUGUESE: pt
+- KOREAN: ko
+
+VoiceAgentClient
+
+Constructor
+new VoiceAgentClient({
+  apiKey: string,
+  prompt: string,
+  voice?: VoiceStyle,
+  language?: Language,
+  visemes?: boolean,
+  enableAudio?: boolean,
+  tools?: ToolDefinition[],
+  onTranscription?: (text: string) => void,
+  onResponse?: (text: string) => void,
+  onAudio?: (data: Uint8Array) => void,
+  onVisemes?: (visemes: Viseme[]) => void,
+  onStatus?: (status: string) => void,
+  onError?: (error: unknown) => void,
+})
+
+Methods
+- connect(customAudioManager?) => Promise<boolean>
+  Opens websocket and sends initial config.
+
+- startManaged({ audioManager? }) => Promise<VoiceAgentClient>
+  Browser-first helper that initializes BrowserAudioManager when no custom manager is provided.
+
+- sendAudio(audioData: Uint8Array) => void
+  Sends PCM16 microphone bytes to backend.
+
+- disconnect() => void
+  Closes websocket and cleans managed audio.
+
+- toggleMute() => boolean
+  Toggles microphone mute if managed audio is active.
+
+- getAmplitude() => number
+  Returns current mic amplitude estimate in range 0..1 when available.
+
+- updatePrompt(newPrompt: string) => void
+  Updates prompt live and sends to backend if connected.
+
+- getTranscript() => Array<{ role: 'user' | 'agent'; text: string; timestamp: number }>
+
+- getTranscriptText() => string
+
+Event APIs
+- Property callbacks set on constructor or instance
+  onTranscription
+  onResponse
+  onAudio
+  onVisemes
+  onStatus
+  onError
+
+- Listener style
+  client.on(eventName, callback)
+  client.onAudio(callback)
+  client.onVisemes(callback)
+
+Status values commonly observed
+- listening
+- thinking
+- speaking
+- interrupted
+- reconnecting
+- disconnected
+
+TTSClient
+
+Constructor
+new TTSClient({ apiKey: string })
+
+Method
+- synthesize({
+    text: string,
+    voice?: VoiceStyle,
+    language?: Language,
+    speed?: number,
+    steps?: number,
+    visemes?: boolean,
+    onAudio?: (data: Uint8Array) => void,
+    onVisemes?: (visemes: unknown[]) => void,
+    onTTFB?: (ms: number) => void,
+    onError?: (error: unknown) => void,
+  }) => Promise<void>
+
+Behavior
+- Opens temporary websocket
+- Streams audio chunks through onAudio
+- Emits viseme payloads when enabled
+- Resolves on EOS/eos or inactivity timeout
+
+Viseme format
+- v: number, token index in source text
+- c: string, viseme code
+- t: number, seconds from stream start
+
+BrowserAudioManager
+
+Constructor
+new BrowserAudioManager({
+  inputSampleRate?: number,
+  outputSampleRate?: number,
+  autoGainControl?: boolean,
+  echoCancellation?: boolean,
+  noiseSuppression?: boolean,
+  onInputError?: (error: Error) => void,
+})
+
+Methods
+- init(analyserConfig?) => Promise<void>
+- startMicrophone(onAudioInput) => Promise<void>
+- stopMicrophone() => void
+- playAudio(pcm16Data: Uint8Array) => void
+- stopPlayback() => void
+- cleanup() => void
+- setMuted(muted: boolean) => void
+- isMicMuted() => boolean
+- getAmplitude() => number
+- getFrequencyData() => Uint8Array
+- getWaveformData() => Uint8Array
+
+Audio utility exports
+- pcm16ToFloat32
+- float32ToPcm16
+- resample
+- resampleWithAntiAliasing
+- normalizeAudio
+- calculateRMS
+- StreamResampler
+
+Default websocket URLs
+- Voice agent: wss://api.lokutor.com/ws/agent
+- TTS: wss://api.lokutor.com/ws/tts

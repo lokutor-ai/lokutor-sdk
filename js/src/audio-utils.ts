@@ -136,6 +136,10 @@ export function pcm16ToBytes(data: Int16Array): Uint8Array {
  * @returns Int16Array of PCM audio
  */
 export function bytesToPcm16(bytes: Uint8Array): Int16Array {
+  if (bytes.length % 2 !== 0) {
+    // Trim the last byte to avoid RangeError
+    bytes = bytes.slice(0, bytes.length - 1);
+  }
   return new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
 }
 
@@ -213,11 +217,16 @@ export class StreamResampler {
     combined.set(inputChunk, this.inputBuffer.length);
 
     const ratio = this.inputRate / this.outputRate;
-    const outputLength = Math.floor(combined.length / ratio);
+    let outputLength = Math.floor(combined.length / ratio);
 
     if (outputLength === 0 && !flush) {
       this.inputBuffer = combined;
       return new Float32Array(0);
+    }
+
+    // On flush, output everything including partial frames
+    if (flush && outputLength === 0 && combined.length > 0) {
+      outputLength = 1;
     }
 
     const output = new Float32Array(outputLength);
@@ -232,10 +241,8 @@ export class StreamResampler {
     }
 
     // Keep remaining samples in buffer
-    const remainingSamples = Math.ceil(combined.length - outputLength * ratio);
-    this.inputBuffer = combined.slice(
-      combined.length - remainingSamples
-    );
+    const consumed = Math.floor(outputLength * ratio);
+    this.inputBuffer = combined.slice(consumed);
 
     return output;
   }

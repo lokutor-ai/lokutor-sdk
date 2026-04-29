@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+
 import { AudioManager } from './client';
 import { AUDIO_CONFIG } from './types';
 
@@ -76,15 +78,12 @@ export class NodeAudioManager implements AudioManager {
           bitDepth: 16,
           sampleRate: AUDIO_CONFIG.SPEAKER_SAMPLE_RATE,
         });
-        
-        // Handle common underflow issues by piping to a tiny buffer if needed
-        // but for now standard pipe should work.
       }
-      
+
       // Node.js 'speaker' accepts Buffers
       this.speaker.write(Buffer.from(pcm16Data));
     } catch (e) {
-      // Silent fail if speaker is unavailable or fails
+      console.error('NodeAudioManager: speaker playback failed:', e);
     }
   }
 

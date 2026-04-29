@@ -31,10 +31,13 @@ new VoiceAgentClient(config: LokutorConfig & {
 Establishes a connection to the Lokutor server. Resolved when the connection is open and configured.
 
 #### `sendAudio(audioData: Buffer | Uint8Array)`
-Sends raw PCM audio data (16-bit, 44.1kHz, mono) to the server.
+Sends raw PCM audio data (16-bit, 16kHz, mono) to the server.
 
-#### `onAudio(callback: (data: Buffer) => void)`
+#### `onAudio(callback: (data: Uint8Array) => void)`
 Subscribes to incoming audio buffers from the AI.
+
+#### `onVisemes(callback: (visemes: Viseme[]) => void)`
+Subscribes to incoming viseme batches.
 
 #### `disconnect()`
 Closes the WebSocket connection.
@@ -81,6 +84,15 @@ Starts synthesis and returns a promise that resolves when the stream finishes.
 - `FRENCH`: "fr"
 - `PORTUGUESE`: "pt"
 - `KOREAN`: "ko"
+
+## Interfaces
+
+### `Viseme`
+- `v`: number – Viseme index.
+- `c`: string – Character/phoneme label.
+- `t`: number – Timestamp in seconds from utterance start.
+
+The SDK accepts wire payload aliases (`id`, `char`, `timestamp`) and normalizes to `v`, `c`, `t`.
 
 ## Constants
 

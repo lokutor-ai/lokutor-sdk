@@ -97,10 +97,10 @@ export interface VoiceAgentOptions {
   language?: Language;
   serverUrl?: string;
   visemes?: boolean;
-  onTranscription?: (text: string, isUser: boolean) => void;
+  onTranscription?: (text: string) => void;
   onVisemes?: (visemes: Viseme[]) => void;
   onStatusChange?: (status: string) => void;
-  onError?: (err: any) => void;
+  onError?: (err: LokutorError) => void;
 }
 
 /**
@@ -108,9 +108,12 @@ export interface VoiceAgentOptions {
  * Format: {"v": index, "c": character, "t": timestamp}
  */
 export interface Viseme {
-  v: number;      // Character index in the source text
-  c: string;      // Character/phoneme being spoken
-  t: number;      // Offset in seconds from the start of the audio stream
+  /** Text-position index (which input character the model is attending to), not a stable viseme ID */
+  v: number;
+  /** Character/phoneme being spoken (reduced set: a,e,i,o,u,m,p,b,f,v,t,d,s,z,l,n,r,k,g,sil) */
+  c: string;
+  /** Offset in seconds from the start of the audio stream */
+  t: number;
 }
 
 /**
@@ -135,4 +138,79 @@ export interface ToolDefinition {
 export interface ToolCall {
   name: string;
   arguments: string;
+}
+
+/**
+ * Error code enum matching the backend API error catalog
+ */
+export type ErrorCode =
+  | 'auth.missing_key'
+  | 'auth.invalid_key'
+  | 'auth.rate_limited'
+  | 'auth.time_limited'
+  | 'validation.invalid_voice'
+  | 'validation.invalid_language'
+  | 'validation.text_too_long'
+  | 'validation.speed_out_of_range'
+  | 'validation.steps_out_of_range'
+  | 'validation.invalid_request_format'
+  | 'tts.synthesis_failed'
+  | 'tts.voice_unavailable'
+  | 'tts.model_not_found'
+  | 'tts.session_limit_reached'
+  | 'stt.not_configured'
+  | 'stt.stream_create_failed'
+  | 'stt.language_not_supported'
+  | 'agent.session_failed'
+  | 'agent.provider_error'
+  | 'internal.error'
+  | 'internal.timeout'
+  | 'internal.cancelled'
+  | 'ws.close';
+
+/**
+ * Typed error class for all Lokutor SDK errors.
+ * Includes the backend error code, human-readable message,
+ * optional detail, and whether the operation is retryable.
+ */
+export class LokutorError extends Error {
+  public readonly code: ErrorCode;
+  public readonly detail?: string;
+  public readonly retryable: boolean;
+  public readonly original?: unknown;
+
+  constructor(code: ErrorCode, message: string, opts?: { detail?: string; retryable?: boolean; original?: unknown }) {
+    super(message);
+    this.name = 'LokutorError';
+    this.code = code;
+    this.detail = opts?.detail;
+    this.retryable = opts?.retryable ?? isRetryableCode(code);
+    this.original = opts?.original;
+  }
+}
+
+function isRetryableCode(code: ErrorCode): boolean {
+  const fatal: ErrorCode[] = [
+    'auth.missing_key',
+    'auth.invalid_key',
+    'auth.time_limited',
+    'validation.invalid_voice',
+    'validation.invalid_language',
+    'validation.text_too_long',
+    'validation.speed_out_of_range',
+    'validation.steps_out_of_range',
+    'validation.invalid_request_format',
+    'internal.cancelled',
+  ];
+  return !fatal.includes(code);
+}
+
+/**
+ * Returns true if the given error is a retryable LokutorError.
+ */
+export function isRetryable(error: unknown): boolean {
+  if (error instanceof LokutorError) {
+    return error.retryable;
+  }
+  return false;
 }

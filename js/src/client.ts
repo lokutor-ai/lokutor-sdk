@@ -7,8 +7,27 @@ import {
   Viseme,
   ToolDefinition,
   ToolCall,
+  LokutorError,
+  ErrorCode,
+  isRetryable,
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
+
+function sdkTraceEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const w = window as any;
+    return Boolean(w.LOKUTOR_TRACE) || window.localStorage?.getItem('lokutorTrace') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function sdkTrace(...args: any[]) {
+  if (sdkTraceEnabled()) {
+    console.log('[SDK TRACE]', ...args);
+  }
+}
 
 /**
  * Interface for audio hardware management (Browser/Node parity)
@@ -35,6 +54,45 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function normalizeVisemes(payload: any): Viseme[] {
+  if (!Array.isArray(payload)) return [];
+  const normalized: Viseme[] = [];
+  for (const item of payload) {
+    if (!item || typeof item !== 'object') continue;
+    const c = String(item.c ?? item.char ?? 'sil').toLowerCase();
+    const t = Number(item.t ?? item.timestamp ?? 0);
+    const v = Number(item.v ?? item.id ?? 0);
+    normalized.push({
+      v: Number.isFinite(v) ? v : 0,
+      c,
+      t: Number.isFinite(t) ? t : 0,
+    });
+  }
+  return normalized;
+}
+
+function extractVisemePayload(msg: any): Viseme[] {
+  if (Array.isArray(msg?.data)) {
+    return normalizeVisemes(msg.data);
+  }
+
+  if (Array.isArray(msg?.data?.visemes)) {
+    return normalizeVisemes(msg.data.visemes);
+  }
+
+  if (msg?.data && !Array.isArray(msg.data) && typeof msg.data === 'object') {
+    const singularInData = normalizeVisemes([msg.data]);
+    if (singularInData.length > 0) return singularInData;
+  }
+
+  if (msg && !Array.isArray(msg) && typeof msg === 'object') {
+    const singularAtRoot = normalizeVisemes([msg]);
+    if (singularAtRoot.length > 0) return singularAtRoot;
+  }
+
+  return [];
+}
+
 /**
  * Main client for Lokutor Voice Agent SDK
  * 
@@ -54,7 +112,7 @@ export class VoiceAgentClient {
   private onAudioCallback?: (data: Uint8Array) => void;
   private onVisemesCallback?: (visemes: Viseme[]) => void;
   private onStatus?: (status: string) => void;
-  private onError?: (error: any) => void;
+  private onError?: (error: LokutorError) => void;
 
   private isConnected: boolean = false;
   private messages: Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> = [];
@@ -72,6 +130,8 @@ export class VoiceAgentClient {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
 
+  private serverUrl: string;
+
   constructor(config: LokutorConfig & {
     prompt: string,
     voice?: VoiceStyle,
@@ -80,11 +140,13 @@ export class VoiceAgentClient {
     onVisemes?: (visemes: Viseme[]) => void,
     enableAudio?: boolean,
     tools?: ToolDefinition[],
+    serverUrl?: string,
   }) {
     this.apiKey = config.apiKey;
     this.prompt = config.prompt;
     this.voice = config.voice || VoiceStyle.F1;
     this.language = config.language || Language.ENGLISH;
+    this.serverUrl = config.serverUrl || DEFAULT_URLS.VOICE_AGENT;
 
     this.onTranscription = config.onTranscription;
     this.onResponse = config.onResponse;
@@ -110,21 +172,38 @@ export class VoiceAgentClient {
       } else if (!this.audioManager && typeof window !== 'undefined') {
         this.audioManager = new BrowserAudioManager();
       }
-      
+
       if (this.audioManager) {
         await this.audioManager.init();
       }
     }
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (!settled) {
+          settled = true;
+          fn();
+        }
+      };
+
       try {
-        let url = DEFAULT_URLS.VOICE_AGENT;
+        let url = this.serverUrl;
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
           url += `${separator}api_key=${this.apiKey}`;
         }
 
-        console.log(`🔗 Connecting to ${DEFAULT_URLS.VOICE_AGENT}...`);
+        const redactedUrl = url.replace(/api_key=[^&]+/, 'api_key=***');
+        sdkTrace('ws.connect', {
+          endpoint: this.serverUrl,
+          url: redactedUrl,
+          enableAudio: this.enableAudio,
+          wantVisemes: this.wantVisemes,
+          hasAudioManager: Boolean(this.audioManager)
+        });
+
+        console.log(`🔗 Connecting to ${this.serverUrl}...`);
 
         this.ws = new WebSocket(url);
         this.ws.binaryType = 'arraybuffer';
@@ -134,6 +213,7 @@ export class VoiceAgentClient {
           this.reconnectAttempts = 0;
           this.reconnecting = false;
           console.log('✅ Connected to voice agent!');
+          sdkTrace('ws.open');
           this.sendConfig();
 
           if (this.audioManager) {
@@ -144,25 +224,61 @@ export class VoiceAgentClient {
             });
           }
 
-          resolve(true);
+          settle(() => resolve(true));
         };
 
         this.ws.onmessage = async (event) => {
           if (event.data instanceof ArrayBuffer) {
+            sdkTrace('ws.message.binary', { bytes: event.data.byteLength });
             this.handleBinaryMessage(new Uint8Array(event.data));
           } else {
+            sdkTrace('ws.message.text', { length: String(event.data).length });
             this.handleTextMessage(event.data.toString());
           }
         };
 
         this.ws.onerror = (err) => {
-          console.error('❌ WebSocket error:', err);
-          if (this.onError) this.onError(err);
-          if (!this.isConnected) reject(err);
+          const error = new LokutorError('ws.close', 'WebSocket connection error', {
+            detail: `readyState=${this.ws?.readyState}, bufferedAmount=${this.ws?.bufferedAmount}`,
+            original: err,
+            retryable: true,
+          });
+          console.error('❌ WebSocket error:', error.message);
+          sdkTrace('ws.error', { code: error.code, message: error.message });
+          if (this.onError) this.onError(error);
+          if (!this.isConnected) {
+            settle(() => reject(error));
+          }
         };
 
-        this.ws.onclose = () => {
+        this.ws.onclose = (event) => {
           this.isConnected = false;
+          const diagnostic = {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+            url: this.serverUrl,
+            isUserDisconnect: this.isUserDisconnect,
+            reconnectAttempts: this.reconnectAttempts
+          };
+          sdkTrace('ws.close', diagnostic);
+
+          if (!settled && !this.isUserDisconnect) {
+            const error = new LokutorError('ws.close', `WebSocket closed unexpectedly (code ${event.code})`, {
+              detail: event.reason || 'No reason provided',
+              retryable: event.code !== 1008,
+            });
+            settle(() => reject(error));
+            return;
+          }
+
+          if (!event.wasClean && event.code === 1006 && this.reconnectAttempts === 0 && !this.isUserDisconnect) {
+            console.error('❌ Connection rejected (code 1006). Likely causes: invalid API key, endpoint unavailable, or CORS blocked.');
+            console.error('   URL:', this.serverUrl.replace(/api_key=[^&]+/, 'api_key=***'));
+          }
+
+          console.log(`🔌 WebSocket closed — code: ${event.code}, reason: "${event.reason || 'none'}", clean: ${event.wasClean}`);
+
           if (!this.isUserDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnecting = true;
             this.reconnectAttempts++;
@@ -182,43 +298,30 @@ export class VoiceAgentClient {
         };
 
       } catch (err) {
-        if (this.onError) this.onError(err);
-        reject(err);
+        const error = err instanceof LokutorError ? err : new LokutorError('internal.error', 'Failed to create WebSocket connection', { original: err });
+        if (this.onError) this.onError(error);
+        settle(() => reject(error));
       }
     });
   }
 
   /**
    * The "Golden Path" - Starts a managed session with hardware handled automatically.
-   * This is the recommended way to start a conversation in both Browser and Node.js.
+   * This is the recommended way to start a conversation in browser environments.
    */
   public async startManaged(config?: { audioManager?: AudioManager }): Promise<this> {
     this.enableAudio = true;
     if (config?.audioManager) {
       this.audioManager = config.audioManager;
     } else if (!this.audioManager) {
-      if (typeof window !== 'undefined') {
-        this.audioManager = new BrowserAudioManager();
-      } else {
-        try {
-          // Node-specific managed playback
-          const { NodeAudioManager } = await import('./node-audio.js');
-          this.audioManager = new NodeAudioManager() as unknown as AudioManager;
-        } catch (e) {
-          console.error('❌ Failed to load NodeAudioManager. Please ensure "speaker" and "node-record-lpcm16" are installed.');
-        }
+      if (typeof window === 'undefined') {
+        throw new LokutorError('internal.error', 'startManaged() requires a browser environment. Pass a custom audioManager for non-browser runtimes.', { retryable: false });
       }
+      this.audioManager = new BrowserAudioManager();
     }
-    
+
     await this.connect();
-    
-    // Auto-start microphone if audio management is available
-    if (this.audioManager && this.isConnected) {
-      await this.audioManager.startMicrophone((data) => {
-        this.sendAudio(data);
-      });
-    }
-    
+
     return this;
   }
 
@@ -228,12 +331,19 @@ export class VoiceAgentClient {
   private sendConfig() {
     if (!this.ws || !this.isConnected) return;
 
-    this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
+    // Send feature/config flags first so the first generated response uses them.
+    this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
     this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
+    this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
 
-    // Enable/disable viseme extraction on backend if requested
-    this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
+    sdkTrace('ws.send.config', {
+      promptLen: this.prompt?.length || 0,
+      voice: this.voice,
+      language: this.language,
+      visemes: this.wantVisemes,
+      tools: this.tools?.length || 0
+    });
 
     if (this.tools && this.tools.length > 0) {
       this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
@@ -248,7 +358,7 @@ export class VoiceAgentClient {
    */
   public sendAudio(audioData: Uint8Array) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
-      this.ws.send(audioData as any);
+      this.ws.send(audioData);
     }
   }
 
@@ -272,6 +382,15 @@ export class VoiceAgentClient {
   private handleTextMessage(text: string) {
     try {
       const msg = JSON.parse(text);
+      if (!msg || typeof msg !== 'object') {
+        return;
+      }
+      sdkTrace('ws.recv.type', {
+        type: msg.type,
+        hasData: Object.prototype.hasOwnProperty.call(msg, 'data'),
+        dataKind: Array.isArray(msg.data) ? 'array' : typeof msg.data,
+        generation: msg.generation ?? null
+      });
       switch (msg.type) {
         case 'audio':
           if (msg.data) {
@@ -318,20 +437,44 @@ export class VoiceAgentClient {
           console.log(`${icons[msg.data] || ''} Status: ${msg.data}`);
           break;
         case 'visemes':
-          if (Array.isArray(msg.data) && msg.data.length > 0) {
-            this.emit('visemes', msg.data);
+        case 'viseme': {
+          const msgGen = msg.generation ?? this.currentGeneration;
+          if (msgGen < this.currentGeneration) {
+            sdkTrace('visemes.discard', { msgGen, currentGen: this.currentGeneration });
+            break;
+          }
+          const normalized = extractVisemePayload(msg);
+          const explicitlyEmptyArray = Array.isArray(msg?.data) || Array.isArray(msg?.data?.visemes);
+          sdkTrace('visemes.recv', {
+            rawType: msg.type,
+            normalizedCount: normalized.length,
+            first: normalized[0] ?? null
+          });
+          if (normalized.length > 0 || explicitlyEmptyArray) {
+            this.emit('visemes', normalized);
           }
           break;
-        case 'error':
-          if (this.onError) this.onError(msg.data);
-          console.error(`❌ Server error: ${msg.data}`);
+        }
+        case 'error': {
+          const backendCode = msg.data?.code ?? 'internal.error';
+          const backendMessage = msg.data?.message ?? msg.data ?? 'Unknown server error';
+          const backendDetail = msg.data?.detail;
+          const backendRetryable = msg.data?.retryable ?? true;
+          const error = new LokutorError(backendCode as ErrorCode, backendMessage, {
+            detail: backendDetail,
+            retryable: backendRetryable,
+          });
+          if (this.onError) this.onError(error);
+          console.error(`❌ Server error: [${error.code}] ${error.message}`);
           break;
+        }
         case 'tool_call':
           console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
           break;
       }
     } catch (e) {
-      // Not JSON or unknown format
+      sdkTrace('ws.recv.parse_error', { preview: text?.slice(0, 120) });
+      console.debug('Failed to parse message:', e);
     }
   }
 
@@ -402,6 +545,23 @@ export class VoiceAgentClient {
       this.audioManager.cleanup();
     }
     this.isConnected = false;
+    this.reconnecting = false;
+    this.reconnectAttempts = 0;
+  }
+
+  /**
+   * Returns true if the client is currently connected.
+   */
+  public get connected(): boolean {
+    return this.isConnected;
+  }
+
+  /**
+   * Returns the current generation counter.
+   * Useful for correlating audio/viseme chunks with utterances.
+   */
+  public get generation(): number {
+    return this.currentGeneration;
   }
 
   /**
@@ -432,12 +592,14 @@ export class VoiceAgentClient {
    */
   public updatePrompt(newPrompt: string) {
     this.prompt = newPrompt;
-    if (this.ws && this.isConnected) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
       try {
         this.ws.send(JSON.stringify({ type: 'prompt', data: newPrompt }));
         console.log(`⚙️ Updated prompt: ${newPrompt.substring(0, 50)}...`);
       } catch (error) {
-        console.error('Error updating prompt:', error);
+        const err = new LokutorError('internal.error', 'Failed to update prompt', { original: error });
+        if (this.onError) this.onError(err);
+        console.error('Error updating prompt:', err.message);
       }
     } else {
       console.warn('Not connected - prompt will be updated on next connection');
@@ -539,30 +701,46 @@ export class TTSClient {
               firstByteReceived = true;
             }
             if (options.onAudio) options.onAudio(new Uint8Array(event.data));
-          } else {
-            const text = event.data.toString();
+            return;
+          }
+          const text = event.data.toString();
+          if (text === 'EOS') {
+            if (activityTimeout) clearTimeout(activityTimeout);
+            ws.close();
+            resolve();
+            return;
+          }
+
+          try {
+            const msg = JSON.parse(text);
             
-            if (text === 'EOS') {
-              if (activityTimeout) clearTimeout(activityTimeout);
-              ws.close();
-              resolve();
+            if (msg.type === 'audio' && msg.data) {
+              const audioBuffer = base64ToUint8Array(msg.data);
+              if (!firstByteReceived) {
+                const ttfb = Date.now() - startTime;
+                if (options.onTTFB) options.onTTFB(ttfb);
+                firstByteReceived = true;
+              }
+              if (options.onAudio) options.onAudio(audioBuffer);
               return;
             }
 
-            try {
-              const msg = JSON.parse(text);
-              if (Array.isArray(msg) && options.onVisemes) {
-                options.onVisemes(msg);
-              }
-              // Check for manual EOS from server
-              if (msg.type === 'eos') {
-                if (activityTimeout) clearTimeout(activityTimeout);
-                ws.close();
-                resolve();
-              }
-            } catch (e) {
-              // Ignore non-JSON or other messages
+            if (msg.type === 'visemes' && Array.isArray(msg.data) && options.onVisemes) {
+              options.onVisemes(normalizeVisemes(msg.data));
+              return;
             }
+
+            if (Array.isArray(msg) && options.onVisemes) {
+              options.onVisemes(normalizeVisemes(msg));
+              return;
+            }
+            
+            if (msg.type === 'eos') {
+              if (activityTimeout) clearTimeout(activityTimeout);
+              ws.close();
+              resolve();
+            }
+          } catch (e) {
           }
         };
 
