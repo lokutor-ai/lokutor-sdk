@@ -380,6 +380,10 @@ export class VoiceAgentClient {
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
     this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
 
+    // Inform the server of our sample rates for echo cancellation.
+    // These match the SDK defaults: 16 kHz mic input, 44.1 kHz speaker output.
+    this.ws.send(JSON.stringify({ type: 'rates', playback: 44100, input: 16000 }));
+
     sdkTrace('ws.send.config', {
       promptLen: this.prompt?.length || 0,
       voice: this.voice,
