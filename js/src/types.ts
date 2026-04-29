@@ -104,6 +104,60 @@ export interface VoiceAgentOptions {
 }
 
 /**
+ * REST API response types for discovery endpoints.
+ */
+
+export interface VoiceInfo {
+  id: string;
+  gender?: string;
+  languages?: string[];
+}
+
+export interface LanguageInfo {
+  code: string;
+  name: string;
+}
+
+export interface ModelInfo {
+  name: string;
+  description?: string;
+  default?: boolean;
+}
+
+export interface ServerConfig {
+  max_text_length: number;
+  min_speed: number;
+  max_speed: number;
+  min_steps: number;
+  max_steps: number;
+  sample_rate: number;
+  channels: number;
+}
+
+export interface ServerStatus {
+  status: string;
+  timestamp: string;
+  version: string;
+  runtime: string;
+  inference: string;
+  uptime_seconds: number;
+  goroutines: number;
+  mem_alloc_bytes: number;
+  active_connections: number;
+  failed_requests: number;
+  ready: boolean;
+}
+
+export interface HealthStatus {
+  status: string;
+  timestamp: string;
+  version: string;
+  runtime: string;
+  inference: string;
+  load: number;
+}
+
+/**
  * Viseme data for lip-sync animation
  * Format: {"v": index, "c": character, "t": timestamp}
  */
