@@ -10,6 +10,12 @@ import {
   LokutorError,
   ErrorCode,
   isRetryable,
+  VoiceInfo,
+  LanguageInfo,
+  ModelInfo,
+  ServerConfig,
+  ServerStatus,
+  HealthStatus,
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
 
@@ -26,6 +32,43 @@ function sdkTraceEnabled(): boolean {
 function sdkTrace(...args: any[]) {
   if (sdkTraceEnabled()) {
     console.log('[SDK TRACE]', ...args);
+  }
+}
+
+function nowMs(): number {
+  if (typeof performance !== 'undefined' && performance.now) {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function wsToHttp(url: string): string {
+  return url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+}
+
+async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      throw new LokutorError('internal.error', `HTTP ${res.status} from ${url}`, {
+        detail: await res.text().catch(() => ''),
+        retryable: res.status >= 500,
+      });
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    clearTimeout(timer);
+    if (err instanceof LokutorError) throw err;
+    throw new LokutorError('internal.error', `Failed to fetch ${url}`, {
+      original: err,
+      retryable: true,
+    });
   }
 }
 
@@ -404,7 +447,7 @@ export class VoiceAgentClient {
           this.messages.push({
             role,
             text: msg.data,
-            timestamp: Date.now()
+            timestamp: nowMs()
           });
 
           if (msg.role === 'user') {
@@ -588,6 +631,63 @@ export class VoiceAgentClient {
   }
 
   /**
+   * Fetch available voice styles from the server.
+   * No authentication required.
+   */
+  static async fetchVoices(baseUrl?: string): Promise<VoiceInfo[]> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const data = await fetchJson<{ voices: VoiceInfo[] }>(`${url}/voices`);
+    return data.voices || [];
+  }
+
+  /**
+   * Fetch supported languages from the server.
+   * No authentication required.
+   */
+  static async fetchLanguages(baseUrl?: string): Promise<LanguageInfo[]> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const data = await fetchJson<{ languages: LanguageInfo[] }>(`${url}/languages`);
+    return data.languages || [];
+  }
+
+  /**
+   * Fetch loaded TTS model versions from the server.
+   * No authentication required.
+   */
+  static async fetchModels(baseUrl?: string): Promise<ModelInfo[]> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const data = await fetchJson<{ models: ModelInfo[] }>(`${url}/models`);
+    return data.models || [];
+  }
+
+  /**
+   * Fetch server configuration (limits and defaults).
+   * No authentication required.
+   */
+  static async fetchConfig(baseUrl?: string): Promise<ServerConfig> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    return fetchJson<ServerConfig>(`${url}/config`);
+  }
+
+  /**
+   * Fetch rich runtime status from the server.
+   * No authentication required.
+   */
+  static async fetchStatus(baseUrl?: string): Promise<ServerStatus> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    return fetchJson<ServerStatus>(`${url}/status`);
+  }
+
+  /**
+   * Fetch health/liveness status from the server.
+   * No authentication required.
+   */
+  static async fetchHealth(baseUrl?: string): Promise<HealthStatus> {
+    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    return fetchJson<HealthStatus>(`${url}/health`);
+  }
+
+  /**
    * Update the system prompt mid-conversation
    */
   public updatePrompt(newPrompt: string) {
@@ -689,14 +789,14 @@ export class TTSClient {
             visemes: options.visemes || false
           };
           ws.send(JSON.stringify(req));
-          startTime = Date.now();
+          startTime = nowMs();
         };
 
         ws.onmessage = async (event) => {
           refreshTimeout();
           if (event.data instanceof ArrayBuffer) {
             if (!firstByteReceived) {
-              const ttfb = Date.now() - startTime;
+              const ttfb = nowMs() - startTime;
               if (options.onTTFB) options.onTTFB(ttfb);
               firstByteReceived = true;
             }
@@ -717,7 +817,7 @@ export class TTSClient {
             if (msg.type === 'audio' && msg.data) {
               const audioBuffer = base64ToUint8Array(msg.data);
               if (!firstByteReceived) {
-                const ttfb = Date.now() - startTime;
+                const ttfb = nowMs() - startTime;
                 if (options.onTTFB) options.onTTFB(ttfb);
                 firstByteReceived = true;
               }
