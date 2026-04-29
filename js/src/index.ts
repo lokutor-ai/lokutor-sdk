@@ -13,4 +13,13 @@ export {
   normalizeAudio,
   StreamResampler,
 } from './audio-utils';
-export type { VoiceAgentOptions, Viseme } from './types';
+export type {
+  VoiceAgentOptions,
+  Viseme,
+  VoiceInfo,
+  LanguageInfo,
+  ModelInfo,
+  ServerConfig,
+  ServerStatus,
+  HealthStatus,
+} from './types';
