@@ -456,9 +456,11 @@ export class VoiceAgentClient {
 
           if (msg.role === 'user') {
             if (this.onTranscription) this.onTranscription(msg.data);
+            this.emit('transcription', msg.data);
             console.log(`💬 You: ${msg.data}`);
           } else {
             if (this.onResponse) this.onResponse(msg.data);
+            this.emit('response', msg.data);
             console.log(`🤖 Agent: ${msg.data}`);
           }
           break;
@@ -475,6 +477,7 @@ export class VoiceAgentClient {
             this.audioManager.stopPlayback();
           }
           if (this.onStatus) this.onStatus(msg.data);
+          this.emit('status', msg.data);
           const icons: Record<string, string> = {
             'interrupted': '⚡',
             'thinking': '🧠',
@@ -512,10 +515,12 @@ export class VoiceAgentClient {
             retryable: backendRetryable,
           });
           if (this.onError) this.onError(error);
+          this.emit('error', error);
           console.error(`❌ Server error: [${error.code}] ${error.message}`);
           break;
         }
         case 'tool_call':
+          this.emit('tool_call', { name: msg.name, arguments: msg.arguments });
           console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
           break;
       }
