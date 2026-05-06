@@ -60,6 +60,7 @@ const PANEL_CSS = /*css*/ `
   .cv-curtain-desc {
     font-size: clamp(0.75rem, 2vw, 1.1rem);
     opacity: 0.8;
+    color: rgba(255,255,255,0.8);
     max-width: 400px;
     margin: 0;
     line-height: 1.5;
@@ -99,7 +100,7 @@ const PANEL_CSS = /*css*/ `
   .cv-title {
     font-size: clamp(1rem, 2.5vw, 1.75rem);
     font-weight: 700;
-    color: #e0e0e0;
+    color: var(--cv-text, #e0e0e0);
     display: flex;
     align-items: center;
     gap: 1rem;
@@ -160,13 +161,13 @@ const PANEL_CSS = /*css*/ `
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--cv-ui-bg, rgba(255, 255, 255, 0.03));
     backdrop-filter: blur(30px);
     -webkit-backdrop-filter: blur(30px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--cv-ui-border, rgba(255, 255, 255, 0.08));
     padding: 0.3rem 0.75rem;
     border-radius: 100px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
   }
   .cv-btn {
     display: flex;
@@ -174,7 +175,7 @@ const PANEL_CSS = /*css*/ `
     gap: 0.5rem;
     background: transparent;
     border: none;
-    color: rgba(255,255,255,0.55);
+    color: var(--cv-text-dim, rgba(255,255,255,0.55));
     font-weight: 600;
     font-size: 0.75rem;
     cursor: pointer;
@@ -182,7 +183,7 @@ const PANEL_CSS = /*css*/ `
     padding: 0.35rem 0.75rem;
     border-radius: 50px;
   }
-  .cv-btn:hover { color: #fff; background: rgba(255,255,255,0.05); }
+  .cv-btn:hover { color: var(--cv-text, #fff); background: var(--cv-ui-bg, rgba(255,255,255,0.05)); }
   .cv-btn--end { color: #ff4444; }
   .cv-btn--end .cv-btn-box {
     background: #ff4444;
@@ -307,7 +308,7 @@ export class ConversationalPanel {
     const bg = this.cfg.backgroundColor || '#0a0a0a';
 
     this.container.style.setProperty('--cv-accent', accent);
-    this.container.style.setProperty('--cv-bg', bg);
+    this.setBackgroundColor(bg);
 
     this.el = document.createElement('div');
     this.el.className = 'cv-panel';
@@ -526,6 +527,37 @@ export class ConversationalPanel {
       const b = parseInt(color.slice(5, 7), 16) / 255;
       this.visualizer.setAccentColor(r, g, b);
     }
+  }
+
+  /** Update background color dynamically and ensure text/UI contrast */
+  setBackgroundColor(color: string) {
+    this.cfg.backgroundColor = color;
+    this.container.style.setProperty('--cv-bg', color);
+
+    // Calculate luminance to decide on light/dark theme contrast
+    // Simple hex to RGB conversion
+    let r = 0, g = 0, b = 0;
+    if (color.startsWith('#')) {
+      if (color.length === 4) {
+        r = parseInt(color[1] + color[1], 16);
+        g = parseInt(color[2] + color[2], 16);
+        b = parseInt(color[3] + color[3], 16);
+      } else {
+        r = parseInt(color.slice(1, 3), 16);
+        g = parseInt(color.slice(3, 5), 16);
+        b = parseInt(color.slice(5, 7), 16);
+      }
+    }
+
+    // Relative luminance formula
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const isLight = luminance > 0.5;
+
+    // Set contrast variables
+    this.container.style.setProperty('--cv-text', isLight ? '#000000' : '#ffffff');
+    this.container.style.setProperty('--cv-text-dim', isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)');
+    this.container.style.setProperty('--cv-ui-bg', isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)');
+    this.container.style.setProperty('--cv-ui-border', isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)');
   }
 
   /** Update title text */
