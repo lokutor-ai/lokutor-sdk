@@ -4,6 +4,8 @@ export * from './audio-utils';
 export * from './browser-audio';
 export { VoiceAgentClient, TTSClient, simpleConversation, simpleTTS } from './client';
 export { BrowserAudioManager } from './browser-audio';
+export { ConversationalPanel } from './conversational-panel';
+export type { ConversationalPanelConfig } from './conversational-panel';
 export {
   pcm16ToFloat32,
   float32ToPcm16,

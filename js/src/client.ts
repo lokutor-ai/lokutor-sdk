@@ -517,6 +517,7 @@ export class VoiceAgentClient {
         }
         case 'tool_call':
           console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
+          this.emit('tool_call', msg);
           break;
       }
     } catch (e) {
