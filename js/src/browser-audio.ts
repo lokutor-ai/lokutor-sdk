@@ -230,6 +230,10 @@ export class BrowserAudioManager {
       return;
     }
 
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
     if (pcm16Data.length % 2 !== 0) {
       console.warn(`Discarding odd-length PCM buffer (${pcm16Data.length} bytes)`);
       return;

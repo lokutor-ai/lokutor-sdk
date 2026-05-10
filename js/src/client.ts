@@ -467,11 +467,10 @@ export class VoiceAgentClient {
         case 'status':
           if (msg.data === 'thinking') {
             const newGen = msg.generation || 0;
-            if (newGen > this.currentGeneration) {
-              console.log(`🧠 New thought (Gen ${newGen}) - Clearing audio queue`);
-              this.currentGeneration = newGen;
-              if (this.audioManager) this.audioManager.stopPlayback();
-            }
+          if (newGen > this.currentGeneration) {
+            console.log(`🧠 New thought (Gen ${newGen})`);
+            this.currentGeneration = newGen;
+          }
           }
           if (msg.data === 'interrupted' && this.audioManager) {
             this.audioManager.stopPlayback();
