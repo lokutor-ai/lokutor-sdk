@@ -314,6 +314,11 @@ export class BrowserAudioManager {
    */
   setMuted(muted: boolean): void {
     this.isMuted = muted;
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach(track => {
+        track.enabled = !muted;
+      });
+    }
   }
 
   /**
