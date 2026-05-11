@@ -8,6 +8,7 @@ import logging
 import os
 import time
 import queue
+import threading
 from threading import Thread, Event
 from typing import Callable, Optional
 
@@ -28,10 +29,13 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
 
 class _AudioIO:
     """Hardware abstraction for audio with background playback"""
@@ -64,10 +68,8 @@ class _AudioIO:
         self.playback_thread.start()
 
     def _playback_loop(self):
-        """Background thread to play audio chunks without blocking WebSocket"""
         while not self.stop_playback.is_set():
             try:
-                # Use a small timeout to allow checking stop_playback
                 chunk = self.playback_queue.get(timeout=0.1)
                 if chunk and self.out_stream:
                     self.out_stream.write(chunk)
@@ -82,11 +84,9 @@ class _AudioIO:
         return self.in_stream.read(CHUNK_SIZE, exception_on_overflow=False) if self.in_stream else None
 
     def write(self, data):
-        """Queue audio for playback"""
         self.playback_queue.put(data)
 
     def clear_output(self):
-        """Flush the playback queue (for interruptions)"""
         while not self.playback_queue.empty():
             try:
                 self.playback_queue.get_nowait()
@@ -95,18 +95,14 @@ class _AudioIO:
                 break
 
     def wait_until_finished(self):
-        """Wait until all queued audio has been played"""
         if self.playback_thread and self.playback_thread.is_alive():
-            # Wait for queue to be empty and all tasks done
             self.playback_queue.join()
-            # Small buffer for hardware latency
             time.sleep(0.3)
 
     def stop(self):
         self.stop_playback.set()
         if self.playback_thread:
             self.playback_thread.join(timeout=1.0)
-        
         for s in [self.in_stream, self.out_stream]:
             if s:
                 try:
@@ -119,9 +115,12 @@ class _AudioIO:
 
 class VoiceAgentClient:
     """
-    Simple, high-level client for voice conversations with Lokutor AI Agent
-    
-    Example usage:
+    High-level client for voice conversations with Lokutor AI Agent
+
+    Connects to the voice agent WebSocket endpoint, sends microphone audio,
+    and receives synthesized speech responses with proper interruption handling.
+
+    Example:
         client = VoiceAgentClient(
             api_key="your-api-key",
             prompt="You are a helpful assistant",
@@ -139,7 +138,6 @@ class VoiceAgentClient:
         language: Language = Language.ENGLISH,
         visemes: bool = False,
         tools: Optional[list] = None,
-        # Property-style callbacks (legacy support)
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable[[bytes], None]] = None,
@@ -148,30 +146,13 @@ class VoiceAgentClient:
         on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
-        """
-        Initialize Voice Agent Client
-        
-        Args:
-            api_key: API key for authentication
-            prompt: System prompt for the AI agent
-            voice: Voice style to use (VoiceStyle enum)
-            language: Language for speech and text (Language enum)
-            visemes: Whether to enable viseme extraction for agent audio (default: False)
-            on_transcription: Optional callback when user speech is transcribed
-            on_response: Optional callback when agent text response is received
-            on_audio: Optional callback when raw audio bytes are received
-            on_visemes: Optional callback when viseme data is received
-            on_status: Optional callback for status changes
-            on_error: Optional callback when errors occur
-        """
         self.api_key = api_key
         self.prompt = prompt
         self.voice = voice
         self.language = language
         self.server_url = DEFAULT_VOICE_AGENT_URL
-        self.want_visemes = visemes  # Set from constructor parameter
-        
-        # Callbacks
+        self.want_visemes = visemes
+
         self.on_transcription = on_transcription
         self.on_response = on_response
         self.on_audio = on_audio
@@ -179,29 +160,26 @@ class VoiceAgentClient:
         self.on_tool_call = on_tool_call
         self.on_status = on_status
         self.on_error = on_error
-        
-        # Connection state
+
         self.ws = None
-        self.connected = False
-        self.stop_conversation = False
+        self.ws_thread = None
+        self.connected = Event()
+        self.config_done = Event()
+        self.running = False
         self.audio = _AudioIO()
         self.tools = tools or []
         self.current_generation = 0
-        
-        # Message history
-        self.messages = []  # List of {"role": "user"|"agent", "text": "...", "timestamp": ...}
+
+        self.messages = []
         self._listeners = {}
 
     def on(self, event: str, callback: Callable):
-        """Register an event listener (for JS parity)"""
         if event not in self._listeners:
             self._listeners[event] = []
         self._listeners[event].append(callback)
         return self
 
     def _emit(self, event: str, *args, **kwargs):
-        """Emit an event to all registered listeners"""
-        # Call legacy property callbacks first
         legacy_attr = f"on_{event}"
         if hasattr(self, legacy_attr):
             cb = getattr(self, legacy_attr)
@@ -211,7 +189,6 @@ class VoiceAgentClient:
                 except Exception as e:
                     logger.error(f"Error in legacy callback {legacy_attr}: {e}")
 
-        # Call new .on() listeners
         if event in self._listeners:
             for cb in self._listeners[event]:
                 try:
@@ -220,20 +197,14 @@ class VoiceAgentClient:
                     logger.error(f"Error in listener for {event}: {e}")
 
     def connect(self) -> bool:
-        """
-        Connect to the voice agent server
-        
-        Returns:
-            True if connected successfully, False otherwise
-        """
         try:
             logger.info(f"Connecting to {self.server_url}...")
-            
-            # Add API key to headers for authentication
-            headers = []
-            if self.api_key:
-                headers.append(f"X-API-Key: {self.api_key}")
-            
+
+            headers = [f"X-API-Key: {self.api_key}"] if self.api_key else None
+
+            self.connected.clear()
+            self.config_done.clear()
+
             self.ws = websocket.WebSocketApp(
                 self.server_url,
                 on_message=self._on_message,
@@ -242,21 +213,17 @@ class VoiceAgentClient:
                 header=headers if headers else None,
             )
             self.ws.on_open = self._on_open
-            
-            # Run WebSocket in background thread
-            ws_thread = Thread(target=self.ws.run_forever, daemon=True)
-            ws_thread.start()
-            
-            # Wait for connection
-            for i in range(CONNECTION_TIMEOUT * 2):
-                time.sleep(0.5)
-                if self.connected:
-                    logger.info("Connected to voice agent!")
-                    return True
-            
-            logger.error(f"Connection timeout after {CONNECTION_TIMEOUT}s")
-            return False
-            
+
+            self.ws_thread = Thread(target=self.ws.run_forever, daemon=True)
+            self.ws_thread.start()
+
+            if not self.connected.wait(timeout=CONNECTION_TIMEOUT):
+                logger.error(f"Connection timeout after {CONNECTION_TIMEOUT}s")
+                return False
+
+            logger.info("Connected to voice agent!")
+            return True
+
         except Exception as e:
             logger.error(f"Connection error: {e}")
             if self.on_error:
@@ -264,17 +231,15 @@ class VoiceAgentClient:
             return False
 
     def disconnect(self):
-        """Disconnect from the server"""
-        self.stop_conversation = True
+        self.running = False
         if self.ws:
             self.ws.close()
         self.audio.stop()
         logger.info("Disconnected")
-    
+
     def update_prompt(self, new_prompt: str):
-        """Update the system prompt mid-conversation"""
         self.prompt = new_prompt
-        if self.ws and self.connected:
+        if self.ws and self.connected.is_set():
             try:
                 self.ws.send(json.dumps({"type": "prompt", "data": new_prompt}))
                 logger.info(f"Updated prompt: {new_prompt[:50]}...")
@@ -282,13 +247,11 @@ class VoiceAgentClient:
                 logger.error(f"Error updating prompt: {e}")
         else:
             logger.warning("Not connected - prompt will be updated on next connection")
-    
+
     def get_transcript(self) -> list:
-        """Get full conversation transcript"""
         return self.messages.copy()
-    
+
     def get_transcript_text(self) -> str:
-        """Get conversation as formatted text"""
         lines = []
         for msg in self.messages:
             role_label = "You" if msg["role"] == "user" else "Agent"
@@ -296,40 +259,41 @@ class VoiceAgentClient:
         return "\n".join(lines)
 
     def start_conversation(self):
-        """Start an interactive voice conversation"""
-        if not self.connected:
+        if not self.connected.is_set():
             if not self.connect():
                 return
 
-        self.stop_conversation = False
-        
+        self.running = True
+
         try:
             logger.info("Starting conversation... Speak whenever you're ready")
             self.audio.start_input()
             self.audio.start_output()
+
+            self.config_done.wait(timeout=5.0)
+
             self._run_conversation_loop()
-            
+
         except KeyboardInterrupt:
             logger.info("Conversation ended")
         finally:
             self.audio.stop()
 
     def _run_conversation_loop(self):
-        """Main conversation loop - sends raw audio to server"""
         logger.debug("Starting conversation loop")
         last_pulse = time.time()
         chunks_sent = 0
-        
-        while not self.stop_conversation:
+
+        while self.running:
             chunk = self.audio.read()
-            if not chunk: continue
+            if not chunk:
+                continue
 
             if self.ws and self.ws.sock and self.ws.sock.connected:
                 try:
                     self.ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
                     chunks_sent += 1
-                    
-                    # Log pulses every 2 seconds for debugging
+
                     if time.time() - last_pulse > 2.0:
                         logger.debug(f"Streaming pulse: sent {chunks_sent} chunks")
                         last_pulse = time.time()
@@ -337,44 +301,37 @@ class VoiceAgentClient:
                     logger.error(f"Error sending audio: {e}")
                     break
             else:
-                # If WS disconnected but loop still running, break
                 if not self.ws or not self.ws.sock or not self.ws.sock.connected:
                     logger.warning("WebSocket lost - ending loop")
                     break
                 time.sleep(0.1)
 
     def _on_open(self, ws):
-        """WebSocket opened"""
-        self.connected = True
-        logger.info("WebSocket connected")
-        
-        # Send initial configuration
+        logger.info("WebSocket opened (sending config...)")
+
         try:
-            # Set prompt
-            ws.send(json.dumps({"type": "prompt", "data": self.prompt}))
-            # Set voice
             ws.send(json.dumps({"type": "voice", "data": self.voice.value}))
-            # Set language
             ws.send(json.dumps({"type": "language", "data": self.language.value}))
-            # Enable/disable viseme extraction on backend
-            ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
-            # Send tools
             if self.tools:
                 ws.send(json.dumps({"type": "tools", "data": self.tools}))
-            logger.info(f"Configured: voice={self.voice}, language={self.language}, visemes={self.want_visemes}, tools={len(self.tools)}")
+            ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
+            ws.send(json.dumps({"type": "prompt", "data": self.prompt}))
+
+            logger.info(f"Configured: voice={self.voice.value}, language={self.language.value}, "
+                        f"visemes={self.want_visemes}, tools={len(self.tools)}")
+
         except Exception as e:
             logger.error(f"Error sending config: {e}")
 
+        self.connected.set()
+
     def _on_message(self, ws, message):
-        """Handle WebSocket messages from server"""
         try:
-            # Handle binary audio frames
             if isinstance(message, bytes):
                 self._emit("audio", message)
                 self.audio.write(message)
                 return
 
-            # Handle text messages (JSON)
             if isinstance(message, str):
                 msg = json.loads(message)
                 msg_type = msg.get("type")
@@ -383,7 +340,6 @@ class VoiceAgentClient:
                     gen = msg.get("generation", 0)
                     if gen < self.current_generation:
                         return
-                    
                     data_str = msg.get("data")
                     if data_str:
                         audio_data = base64.b64decode(data_str)
@@ -392,16 +348,15 @@ class VoiceAgentClient:
                     return
 
                 elif msg_type == "transcript":
-                    transcript = msg.get("data")
+                    transcript = msg.get("data") or msg.get("text", "")
                     role = msg.get("role", "user")
-                    
-                    # Store in history
+
                     self.messages.append({
                         "role": role,
                         "text": transcript,
                         "timestamp": time.time()
                     })
-                    
+
                     if role == "user":
                         self._emit("transcription", transcript)
                         logger.info(f"You: {transcript}")
@@ -412,30 +367,45 @@ class VoiceAgentClient:
                 elif msg_type == "status":
                     status = msg.get("data")
                     self._emit("status", status)
-                        
-                    if status == "interrupted":
+
+                    if status == "prompt_set":
+                        self.config_done.set()
+                        logger.debug("Config confirmed by server")
+
+                    elif status == "interrupted":
                         logger.info("Interrupted")
                         self.audio.clear_output()
+
                     elif status == "thinking":
                         new_gen = msg.get("generation", 0)
                         if new_gen > self.current_generation:
                             self.current_generation = new_gen
                             self.audio.clear_output()
                         logger.info(f"Thinking... (Gen {self.current_generation})")
+
                     elif status == "speaking":
                         logger.info("Agent speaking...")
+
                     elif status == "listening":
                         logger.info("Listening...")
 
+                    elif status == "connected":
+                        pass
+
+                elif msg_type == "server_rates":
+                    playback = msg.get("playback", 44100)
+                    inp = msg.get("input", 16000)
+                    ws.send(json.dumps({
+                        "type": "rates",
+                        "playback": playback,
+                        "input": inp,
+                    }))
+                    logger.debug(f"Configured AEC rates: playback={playback}, input={inp}")
+
                 elif msg_type == "visemes":
                     viseme_data = msg.get("data", [])
-                    # Convert from wire format to Viseme objects
                     vis_objs = [
-                        Viseme(
-                            id=v.get("v"),
-                            char=v.get("c"),
-                            timestamp=v.get("t")
-                        )
+                        Viseme(id=v.get("v"), char=v.get("c"), timestamp=v.get("t"))
                         for v in viseme_data
                     ]
                     self._emit("visemes", vis_objs)
@@ -456,27 +426,22 @@ class VoiceAgentClient:
             logger.error(f"Message handling error: {e}")
 
     def _on_error(self, ws, error):
-        """WebSocket error"""
         logger.error(f"WebSocket error: {error}")
-        self.connected = False
         if self.on_error:
             self.on_error(str(error))
-        self.stop_conversation = True
 
     def _on_close(self, ws, close_status_code, close_msg):
-        """WebSocket closed"""
         logger.info("Connection closed")
-        self.connected = False
+        self.connected.clear()
+        self.config_done.clear()
+        self.running = False
 
 
 class TTSClient:
     """
     Client for standalone Text-to-Speech synthesis
     """
-    def __init__(
-        self,
-        api_key: str,
-    ):
+    def __init__(self, api_key: str):
         self.api_key = api_key
         self.server_url = DEFAULT_TTS_URL
         self.audio = _AudioIO()
@@ -495,26 +460,8 @@ class TTSClient:
         play: bool = True,
         block: bool = True
     ):
-        """
-        Synthesize text to speech
-        
-        Args:
-            text: Text to synthesize
-            voice: Voice style
-            language: Language
-            speed: Speech speed
-            steps: Inference steps (quality)
-            visemes: Whether to request visemes
-            on_audio: Optional callback for raw audio bytes
-            on_visemes: Optional callback for viseme data
-            play: Whether to play the audio immediately
-            block: Whether to wait for playback to finish
-        """
         finished_event = Event()
-        state = {
-            "start_time": 0.0,
-            "first_byte_received": False
-        }
+        state = {"start_time": 0.0, "first_byte_received": False}
 
         def on_open(ws):
             req = {
@@ -523,7 +470,7 @@ class TTSClient:
                 "lang": language.value,
                 "speed": speed,
                 "steps": steps,
-                "visemes": visemes
+                "visemes": visemes,
             }
             ws.send(json.dumps(req))
             state["start_time"] = time.time()
@@ -531,11 +478,10 @@ class TTSClient:
         def on_message(ws, message):
             if isinstance(message, bytes):
                 if not state["first_byte_received"]:
-                    ttfb = (time.time() - state["start_time"]) * 1000  # in ms
+                    ttfb = (time.time() - state["start_time"]) * 1000
                     if on_ttfb:
                         on_ttfb(ttfb)
                     state["first_byte_received"] = True
-                
                 if on_audio:
                     on_audio(message)
                 if play:
@@ -544,7 +490,6 @@ class TTSClient:
                 if message == "EOS":
                     ws.close()
                     return
-
                 try:
                     data = json.loads(message)
                     if isinstance(data, list) and on_visemes:
@@ -566,7 +511,7 @@ class TTSClient:
 
         if play:
             self.audio.start_output()
-        
+
         headers = [f"X-API-Key: {self.api_key}"] if self.api_key else None
         ws = websocket.WebSocketApp(
             self.server_url,
@@ -576,22 +521,17 @@ class TTSClient:
             on_error=on_error,
             on_close=on_close,
         )
-        
+
         ws_thread = Thread(target=ws.run_forever, daemon=True)
         ws_thread.start()
 
         if block:
-            # First wait for the stream to finish (socket close)
-            # Use a timeout as safety
             finished_event.wait(timeout=30.0)
-            
             if play:
-                # Then wait for the audio hardware to finish playing what it received
                 self.audio.wait_until_finished()
                 self.audio.stop()
-            
             ws.close()
-        
+
         return ws
 
 
@@ -601,9 +541,6 @@ def simple_conversation(
     voice: VoiceStyle = VoiceStyle.F1,
     language: Language = Language.ENGLISH,
 ):
-    """
-    Quick function to start a conversation without manual setup
-    """
     client = VoiceAgentClient(
         api_key=api_key,
         prompt=prompt,
@@ -620,9 +557,5 @@ def simple_tts(
     language: Language = Language.ENGLISH,
     play: bool = True,
 ):
-    """
-    Quick function for standalone TTS synthesis
-    """
     client = TTSClient(api_key=api_key)
     client.synthesize(text=text, voice=voice, language=language, play=play, block=True)
-

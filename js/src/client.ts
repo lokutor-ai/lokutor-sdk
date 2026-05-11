@@ -166,12 +166,18 @@ export class VoiceAgentClient {
   private enableAudio: boolean = false;
   private currentGeneration: number = 0;
   private listeners: Record<string, Function[]> = {};
+  private configConfirmed: boolean = false;
 
   // Connection resilience
   private isUserDisconnect: boolean = false;
   private reconnecting: boolean = false;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Runtime state
+  private serverPlaybackRate: number = 44100;
+  private serverInputRate: number = 16000;
 
   private serverUrl: string;
 
@@ -296,6 +302,7 @@ export class VoiceAgentClient {
 
         this.ws.onclose = (event) => {
           this.isConnected = false;
+          this.configConfirmed = false;
           const diagnostic = {
             code: event.code,
             reason: event.reason,
@@ -331,11 +338,18 @@ export class VoiceAgentClient {
 
             if (this.onStatus) this.onStatus('reconnecting');
 
-            setTimeout(() => {
-              this.connect().catch(e => console.error("Reconnect failed", e));
+            if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              this.connect().then(() => {
+                this.emit('reconnected');
+              }).catch(e => console.error("Reconnect failed", e));
             }, backoffDelay);
-          } else {
+          } else if (this.isUserDisconnect) {
             console.log('Disconnected');
+            if (this.onStatus) this.onStatus('disconnected');
+          } else {
+            console.log('Max reconnection attempts reached');
             if (this.onStatus) this.onStatus('disconnected');
           }
         };
@@ -374,14 +388,18 @@ export class VoiceAgentClient {
   private sendConfig() {
     if (!this.ws || !this.isConnected) return;
 
-    // Send feature/config flags first so the first generated response uses them.
-    this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
+    this.configConfirmed = false;
+
+    // Send feature/config flags — order matches the test agent for consistency.
     this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
     this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
+    if (this.tools && this.tools.length > 0) {
+      this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
+    }
+    this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
     this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
 
     // Inform the server of our sample rates for echo cancellation.
-    // These match the SDK defaults: 16 kHz mic input, 44.1 kHz speaker output.
     this.ws.send(JSON.stringify({ type: 'rates', playback: 44100, input: 16000 }));
 
     sdkTrace('ws.send.config', {
@@ -391,10 +409,6 @@ export class VoiceAgentClient {
       visemes: this.wantVisemes,
       tools: this.tools?.length || 0
     });
-
-    if (this.tools && this.tools.length > 0) {
-      this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
-    }
 
     console.log(`⚙️ Configured: voice=${this.voice}, language=${this.language}, visemes=${this.wantVisemes}, tools=${this.tools.length}`);
   }
@@ -445,6 +459,11 @@ export class VoiceAgentClient {
             this.handleBinaryMessage(buffer, msg.generation);
           }
           break;
+        case 'server_rates':
+          if (msg.playback) this.serverPlaybackRate = msg.playback;
+          if (msg.input) this.serverInputRate = msg.input;
+          sdkTrace('server_rates', { playback: this.serverPlaybackRate, input: this.serverInputRate });
+          break;
         case 'transcript':
           const role = msg.role === 'user' ? 'user' : 'agent';
           // Store in history
@@ -465,12 +484,18 @@ export class VoiceAgentClient {
           }
           break;
         case 'status':
+          if (msg.data === 'prompt_set') {
+            this.configConfirmed = true;
+          }
           if (msg.data === 'thinking') {
             const newGen = msg.generation || 0;
-          if (newGen > this.currentGeneration) {
-            console.log(`🧠 New thought (Gen ${newGen})`);
-            this.currentGeneration = newGen;
-          }
+            if (newGen > this.currentGeneration) {
+              console.log(`🧠 New thought (Gen ${newGen})`);
+              this.currentGeneration = newGen;
+              if (this.audioManager) {
+                this.audioManager.stopPlayback();
+              }
+            }
           }
           if (msg.data === 'interrupted' && this.audioManager) {
             this.audioManager.stopPlayback();
@@ -589,6 +614,10 @@ export class VoiceAgentClient {
    */
   public disconnect() {
     this.isUserDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -597,6 +626,7 @@ export class VoiceAgentClient {
       this.audioManager.cleanup();
     }
     this.isConnected = false;
+    this.configConfirmed = false;
     this.reconnecting = false;
     this.reconnectAttempts = 0;
   }
@@ -712,6 +742,39 @@ export class VoiceAgentClient {
       }
     } else {
       console.warn('Not connected - prompt will be updated on next connection');
+    }
+  }
+
+  /**
+   * Change the voice style mid-conversation
+   */
+  public updateVoice(voice: VoiceStyle) {
+    this.voice = voice;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
+      this.ws.send(JSON.stringify({ type: 'voice', data: voice }));
+      console.log(`⚙️ Updated voice: ${voice}`);
+    }
+  }
+
+  /**
+   * Change the language mid-conversation
+   */
+  public updateLanguage(language: Language) {
+    this.language = language;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
+      this.ws.send(JSON.stringify({ type: 'language', data: language }));
+      console.log(`⚙️ Updated language: ${language}`);
+    }
+  }
+
+  /**
+   * Update tool definitions mid-conversation
+   */
+  public updateTools(tools: ToolDefinition[]) {
+    this.tools = tools;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
+      this.ws.send(JSON.stringify({ type: 'tools', data: tools }));
+      console.log(`⚙️ Updated ${tools.length} tool(s)`);
     }
   }
 
