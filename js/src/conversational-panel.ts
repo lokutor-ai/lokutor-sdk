@@ -601,31 +601,34 @@ export class ConversationalPanel {
 
   // ─── internal helpers ────────────────────────────────────
 
+  private fmt(s: number): string {
+    const m = Math.floor(s / 60).toString().padStart(2, '0');
+    const sec = (s % 60).toString().padStart(2, '0');
+    return `${m}:${sec}`;
+  }
+
   private startTimer() {
     let elapsed = 0;
     const maxDur = this.cfg.maxDuration || 300;
     const silentMax = this.cfg.silenceTimeout || 30;
     this._lastSpeechTime = Date.now();
-    this.timerEl.textContent = '00:00';
+    this.timerEl.textContent = this.fmt(maxDur);
     this.timerTicker = window.setInterval(() => {
       elapsed++;
-      const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
-      const s = (elapsed % 60).toString().padStart(2, '0');
-      this.timerEl.textContent = `${m}:${s}`;
+      const remaining = Math.max(0, maxDur - elapsed);
+      this.timerEl.textContent = this.fmt(remaining);
 
-      // Check max duration
       if (elapsed >= maxDur) {
         this._locked = true;
         this.stop();
-        this.showError('Conversation time limit reached. Refresh to start a new one.');
+        this.showError('Tiempo límite alcanzado.');
         return;
       }
 
-      // Check silence timeout
       if (Date.now() - this._lastSpeechTime > silentMax * 1000) {
         this._locked = true;
         this.stop();
-        this.showError('Session ended due to inactivity. Refresh to start a new one.');
+        this.showError('Sesión finalizada por inactividad.');
       }
     }, 1000);
   }
