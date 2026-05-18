@@ -779,6 +779,25 @@ export class VoiceAgentClient {
   }
 
   /**
+   * Submit a tool execution result back to the agent
+   */
+  public submitToolResult(callID: string, result: string | object) {
+    const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
+      this.ws.send(JSON.stringify({
+        type: 'tool_result',
+        data: {
+          call_id: callID,
+          result: resultStr
+        }
+      }));
+      console.log(`✓ Submitted tool result for call ${callID}`);
+    } else {
+      console.warn('Not connected - cannot submit tool result');
+    }
+  }
+
+  /**
    * Get full conversation transcript
    */
   public getTranscript(): Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> {

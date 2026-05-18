@@ -248,6 +248,24 @@ class VoiceAgentClient:
         else:
             logger.warning("Not connected - prompt will be updated on next connection")
 
+    def submit_tool_result(self, call_id: str, result: str | dict):
+        """Submit a tool execution result back to the agent."""
+        result_str = result if isinstance(result, str) else json.dumps(result)
+        if self.ws and self.connected.is_set():
+            try:
+                self.ws.send(json.dumps({
+                    "type": "tool_result",
+                    "data": {
+                        "call_id": call_id,
+                        "result": result_str
+                    }
+                }))
+                logger.info(f"Submitted tool result for call {call_id}")
+            except Exception as e:
+                logger.error(f"Error submitting tool result: {e}")
+        else:
+            logger.warning("Not connected - cannot submit tool result")
+
     def get_transcript(self) -> list:
         return self.messages.copy()
 

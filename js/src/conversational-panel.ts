@@ -3,7 +3,7 @@ const PANEL_CSS = /*css*/ `
     position: relative;
     width: 100%;
     aspect-ratio: 16 / 9;
-    max-height: 800px;
+    max-height: clamp(200px, 50vh, 800px);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -12,8 +12,9 @@ const PANEL_CSS = /*css*/ `
     margin: 0;
     background: var(--cv-bg, #0a0a0a);
     box-shadow: inset 0 10px 40px rgba(0, 0, 0, 0.1), inset 0 0 100px rgba(0, 0, 0, 0.05);
-    border-radius: 40px;
+    border-radius: clamp(12px, 4vw, 40px);
     overflow: hidden;
+    container-type: size;
   }
   .cv-curtain {
     position: absolute;
@@ -152,35 +153,35 @@ const PANEL_CSS = /*css*/ `
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1.5rem;
+    gap: clamp(1rem, 2vw, 1.5rem);
     margin-top: auto;
-    padding-bottom: 1.5rem;
+    padding-bottom: clamp(1rem, 2vw, 1.5rem);
     z-index: 20;
   }
   .cv-pill {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: clamp(0.5rem, 1vw, 0.75rem);
     background: var(--cv-ui-bg, rgba(255, 255, 255, 0.03));
     backdrop-filter: blur(30px);
     -webkit-backdrop-filter: blur(30px);
     border: 1px solid var(--cv-ui-border, rgba(255, 255, 255, 0.08));
-    padding: 0.3rem 0.75rem;
+    padding: clamp(0.25rem, 0.5vw, 0.3rem) clamp(0.5rem, 1vw, 0.75rem);
     border-radius: 100px;
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
   }
   .cv-btn {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: clamp(0.35rem, 1vw, 0.5rem);
     background: transparent;
     border: none;
     color: var(--cv-text-dim, rgba(255,255,255,0.55));
     font-weight: 600;
-    font-size: 0.75rem;
+    font-size: clamp(0.65rem, 1.5vw, 0.75rem);
     cursor: pointer;
     transition: all 0.2s ease;
-    padding: 0.35rem 0.75rem;
+    padding: clamp(0.25rem, 0.5vw, 0.35rem) clamp(0.5rem, 1vw, 0.75rem);
     border-radius: 50px;
   }
   .cv-btn:hover { color: var(--cv-text, #fff); background: var(--cv-ui-bg, rgba(255,255,255,0.05)); }
@@ -194,31 +195,94 @@ const PANEL_CSS = /*css*/ `
   .cv-btn.is-muted { color: var(--cv-accent); }
   .cv-error {
     position: absolute;
-    bottom: 1.25rem;
+    bottom: clamp(0.75rem, 2vw, 1.25rem);
     left: 50%;
     transform: translateX(-50%);
     background: #0a0a0a;
     color: #e0e0e0;
-    padding: 0.75rem 1.5rem;
-    border-radius: 12px;
-    font-size: 0.875rem;
+    padding: clamp(0.5rem, 1vw, 0.75rem) clamp(1rem, 2vw, 1.5rem);
+    border-radius: clamp(8px, 1.5vw, 12px);
+    font-size: clamp(0.75rem, 1.5vw, 0.875rem);
     font-weight: 500;
     display: none;
     align-items: center;
-    gap: 0.75rem;
+    gap: clamp(0.5rem, 1vw, 0.75rem);
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
     z-index: 1000;
     border: 1px solid rgba(255, 255, 255, 0.06);
     backdrop-filter: blur(20px);
+    max-width: clamp(280px, 90vw, 400px);
   }
   .cv-error.is-visible { display: flex; }
   .cv-error-icon { color: var(--cv-accent); flex-shrink: 0; }
-  @media (max-width: 640px) {
-    .cv-panel { aspect-ratio: 3 / 4; max-height: 600px; border-radius: 20px; }
+  
+  /* === COMPACT MODE: < 300px width === */
+  @container (max-width: 299px) {
+    .cv-curtain-content { padding: 0.5rem; gap: 0.3rem; }
+    .cv-curtain-title { font-size: 0.8rem; }
+    .cv-curtain-desc { display: none; }
+    .cv-curtain-btn { padding: 0.3rem 0.6rem; font-size: 0.6rem; gap: 0.3rem; }
+    .cv-curtain-btn svg { display: none; }
+    .cv-visualizer-wrap { width: 60px; height: 60px; }
+    .cv-header { padding-top: 0.75rem; }
+    .cv-title { font-size: 0.7rem; gap: 0.3rem; }
+    .cv-title .cv-timer { display: none; }
+    .cv-controls { gap: 0.6rem; padding-bottom: 0.6rem; }
+    .cv-pill { padding: 0.15rem 0.4rem; gap: 0.3rem; }
+    .cv-btn { padding: 0.2rem 0.4rem; font-size: 0.6rem; gap: 0; }
+    .cv-btn span { display: none; }
+    .cv-btn svg { width: 16px; height: 16px; }
+    .cv-error { padding: 0.4rem 0.8rem; font-size: 0.65rem; bottom: 0.5rem; }
+  }
+
+  /* === SMALL MODE: 300px - 480px width === */
+  @container (min-width: 300px) and (max-width: 480px) {
     .cv-curtain-content { padding: 0.75rem; gap: 0.5rem; }
-    .cv-curtain-title { font-size: clamp(1rem, 5vw, 1.6rem); }
-    .cv-curtain-btn { padding: 0.5rem 1.25rem; font-size: clamp(0.7rem, 2vw, 0.85rem); }
-    .cv-visualizer-wrap { width: clamp(100px, 50vw, 200px); height: clamp(100px, 50vw, 200px); }
+    .cv-curtain-title { font-size: clamp(0.9rem, 3cqw, 1.2rem); }
+    .cv-curtain-desc { font-size: clamp(0.6rem, 2cqw, 0.8rem); }
+    .cv-curtain-btn { padding: clamp(0.3rem, 1cqw, 0.5rem) clamp(0.6rem, 2cqw, 1rem); font-size: clamp(0.6rem, 1.5cqw, 0.8rem); }
+    .cv-visualizer-wrap { width: clamp(80px, 35cqw, 140px); height: clamp(80px, 35cqw, 140px); }
+    .cv-header { padding-top: 0.8rem; }
+    .cv-title { font-size: clamp(0.7rem, 2.5cqw, 1rem); gap: 0.4rem; }
+    .cv-title .cv-timer { font-size: 0.65em; }
+    .cv-controls { gap: clamp(0.6rem, 1.5cqw, 1rem); padding-bottom: clamp(0.6rem, 1.5cqw, 1rem); }
+    .cv-pill { padding: clamp(0.15rem, 0.5cqw, 0.25rem) clamp(0.35rem, 1cqw, 0.6rem); font-size: 0.65rem; gap: 0.3rem; }
+    .cv-btn { padding: clamp(0.2rem, 0.5cqw, 0.3rem) clamp(0.35rem, 1cqw, 0.6rem); font-size: clamp(0.6rem, 1.2cqw, 0.7rem); }
+    .cv-btn span:last-child { display: none; }
+    .cv-error { padding: clamp(0.4rem, 1cqw, 0.6rem) clamp(0.8rem, 1.5cqw, 1.2rem); font-size: 0.7rem; }
+  }
+
+  /* === MEDIUM MODE: 480px - 768px width === */
+  @container (min-width: 480px) and (max-width: 768px) {
+    .cv-panel { max-height: 600px; aspect-ratio: 3 / 4; }
+    .cv-curtain-content { padding: clamp(0.75rem, 2cqw, 1.25rem); gap: clamp(0.5rem, 1.5cqw, 1rem); }
+    .cv-curtain-title { font-size: clamp(1rem, 4cqw, 1.6rem); }
+    .cv-curtain-desc { font-size: clamp(0.7rem, 2.5cqw, 1rem); }
+    .cv-curtain-btn { padding: clamp(0.45rem, 1.5cqw, 0.7rem) clamp(1rem, 2cqw, 1.5rem); font-size: clamp(0.7rem, 1.5cqw, 0.9rem); }
+    .cv-visualizer-wrap { width: clamp(100px, 40cqw, 200px); height: clamp(100px, 40cqw, 200px); }
+    .cv-header { padding-top: clamp(1rem, 1.5cqw, 1.5rem); }
+    .cv-title { font-size: clamp(0.9rem, 3cqw, 1.3rem); gap: clamp(0.4rem, 1cqw, 0.75rem); }
+    .cv-title .cv-timer { font-size: 0.85em; }
+    .cv-controls { gap: clamp(0.8rem, 1.5cqw, 1.2rem); padding-bottom: clamp(0.8rem, 1.5cqw, 1.2rem); }
+    .cv-pill { padding: clamp(0.2rem, 0.75cqw, 0.3rem) clamp(0.5rem, 1.2cqw, 0.75rem); font-size: 0.7rem; }
+    .cv-btn { padding: clamp(0.25rem, 0.75cqw, 0.35rem) clamp(0.5rem, 1.2cqw, 0.75rem); font-size: clamp(0.65rem, 1.2cqw, 0.8rem); }
+    .cv-error { padding: clamp(0.5rem, 1.2cqw, 0.75rem) clamp(1rem, 1.5cqw, 1.5rem); font-size: clamp(0.7rem, 1.2cqw, 0.85rem); }
+  }
+
+  /* === LARGE MODE: > 768px width === */
+  @container (min-width: 768px) {
+    .cv-curtain-content { padding: clamp(1rem, 2.5cqw, 2rem); gap: clamp(0.75rem, 2cqw, 1.5rem); }
+    .cv-curtain-title { font-size: clamp(1.2rem, 5cqw, 2.5rem); }
+    .cv-curtain-desc { font-size: clamp(0.8rem, 2.5cqw, 1.2rem); max-width: 500px; }
+    .cv-curtain-btn { padding: clamp(0.6rem, 2cqw, 1rem) clamp(1.5rem, 3cqw, 2.5rem); font-size: clamp(0.8rem, 1.5cqw, 1.1rem); }
+    .cv-visualizer-wrap { width: clamp(140px, 45cqw, 300px); height: clamp(140px, 45cqw, 300px); }
+    .cv-header { padding-top: clamp(1.5rem, 2cqw, 2rem); }
+    .cv-title { font-size: clamp(1rem, 3cqw, 1.8rem); gap: clamp(0.75rem, 1.5cqw, 1.2rem); }
+    .cv-title .cv-timer { font-size: 0.9em; }
+    .cv-controls { gap: clamp(1.2rem, 2cqw, 1.8rem); padding-bottom: clamp(1.2rem, 2cqw, 1.8rem); }
+    .cv-pill { padding: clamp(0.3rem, 0.8cqw, 0.4rem) clamp(0.75rem, 1.2cqw, 1rem); font-size: 0.85rem; gap: 0.75rem; }
+    .cv-btn { padding: clamp(0.35rem, 0.8cqw, 0.4rem) clamp(0.75rem, 1.2cqw, 1rem); font-size: clamp(0.75rem, 1.2cqw, 0.9rem); }
+    .cv-error { padding: clamp(0.75rem, 1.5cqw, 1rem) clamp(1.5rem, 2cqw, 2rem); font-size: clamp(0.85rem, 1cqw, 1rem); }
   }
 `;
 
