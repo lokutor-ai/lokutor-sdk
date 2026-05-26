@@ -321,7 +321,7 @@ export interface ConversationalPanelConfig {
   tools?: any[];
   /** Maximum conversation duration in seconds (default 300) */
   maxDuration?: number;
-  /** Seconds of silence before auto-close (default 30) */
+  /** Seconds of silence before auto-close (default 60) */
   silenceTimeout?: number;
 }
 
@@ -501,6 +501,7 @@ export class ConversationalPanel {
           else if (status === 'thinking') this.el.classList.add('cv-is-thinking');
         },
         onTranscription: (text: string) => {
+          this._lastSpeechTime = Date.now();
           this.onTranscription?.(text);
         },
         onResponse: (text: string) => {
@@ -674,7 +675,7 @@ export class ConversationalPanel {
   private startTimer() {
     let elapsed = 0;
     const maxDur = this.cfg.maxDuration || 300;
-    const silentMax = this.cfg.silenceTimeout || 30;
+    const silentMax = this.cfg.silenceTimeout || 60;
     this._lastSpeechTime = Date.now();
     this.timerEl.textContent = this.fmt(maxDur);
     this.timerTicker = window.setInterval(() => {
