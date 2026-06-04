@@ -144,6 +144,7 @@ function extractVisemePayload(msg: any): Viseme[] {
 export class VoiceAgentClient {
   private ws: WebSocket | null = null;
   private apiKey: string;
+  private agentId: string = "";
   public prompt: string;
   public voice: VoiceStyle;
   public language: Language;
@@ -192,6 +193,7 @@ export class VoiceAgentClient {
     serverUrl?: string,
   }) {
     this.apiKey = config.apiKey;
+    this.agentId = config.agentId || "";
     this.prompt = config.prompt;
     this.voice = config.voice || VoiceStyle.F1;
     this.language = config.language || Language.ENGLISH;
@@ -241,6 +243,10 @@ export class VoiceAgentClient {
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
           url += `${separator}api_key=${this.apiKey}`;
+        }
+        if (this.agentId) {
+          const separator = url.includes('?') ? '&' : '?';
+          url += `${separator}agent_id=${this.agentId}`;
         }
 
         const redactedUrl = url.replace(/api_key=[^&]+/, 'api_key=***');

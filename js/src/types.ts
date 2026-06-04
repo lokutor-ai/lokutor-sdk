@@ -83,6 +83,7 @@ export const DEFAULT_URLS = {
  */
 export interface LokutorConfig {
   apiKey: string;
+  agentId?: string;
   onTranscription?: (text: string) => void;
   onResponse?: (text: string) => void;
   onAudio?: (data: Uint8Array) => void;

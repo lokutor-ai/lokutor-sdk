@@ -89,7 +89,7 @@ const PANEL_CSS = /*css*/ `
   }
   .cv-curtain-btn svg { transition: transform 0.3s ease; }
   .cv-curtain-btn:hover svg { transform: translateX(4px); }
-  .cv-header {
+  .cv-error {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -215,12 +215,47 @@ const PANEL_CSS = /*css*/ `
   }
   .cv-error.is-visible { display: flex; }
   .cv-error-icon { color: var(--cv-accent); flex-shrink: 0; }
+  .cv-voice-picker {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.35rem;
+    z-index: 2;
+  }
+  .cv-voice-btn {
+    padding: 0.25rem 0.5rem;
+    border-radius: 100px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.6);
+    font-size: 0.65rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .cv-voice-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+  }
+  .cv-voice-btn.is-selected {
+    background: #fff;
+    color: #000;
+    border-color: #fff;
+  }
+  .cv-voice-label {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.35);
+    z-index: 2;
+  }
   
   /* === COMPACT MODE: < 300px width === */
   @container (max-width: 299px) {
     .cv-curtain-content { padding: 0.5rem; gap: 0.3rem; }
     .cv-curtain-title { font-size: 0.8rem; }
     .cv-curtain-desc { display: none; }
+    .cv-voice-picker { display: none; }
     .cv-curtain-btn { padding: 0.3rem 0.6rem; font-size: 0.6rem; gap: 0.3rem; }
     .cv-curtain-btn svg { display: none; }
     .cv-visualizer-wrap { width: 60px; height: 60px; }
@@ -297,13 +332,19 @@ function injectStyles() {
 }
 
 export interface ConversationalPanelConfig {
+  /** Container element to mount the panel */
   container: HTMLElement;
-  title: string;
-  description: string;
-  prompt: string;
+  /** Agent name or title shown in the curtain */
+  title?: string;
+  /** Short description below the title */
+  description?: string;
+  /** System prompt for the voice agent */
+  prompt?: string;
+  /** Voice style identifier (default: M1) */
   voice?: string;
+  /** Language code (default: en) */
   language?: string;
-  /** Accent color for the sphere glow and highlights, e.g. '#e74c3c' */
+  /** Accent color for the sphere glow and highlights, e.g. '#e74c3b' */
   accentColor?: string;
   /** Background color, e.g. '#0a0a0a' */
   backgroundColor?: string;
@@ -336,12 +377,13 @@ export class ConversationalPanel {
   private isRunning = false;
   private _locked = false;
   private _lastSpeechTime = 0;
-
-  // Cached DOM refs
+  private selectedVoice = 'M1';
   private el!: HTMLElement;
   private curtain!: HTMLElement;
   private curtainTitle!: HTMLElement;
   private curtainDesc!: HTMLElement;
+  private curtainBg!: HTMLElement;
+  private curtainOverlay!: HTMLElement;
   private startBtn!: HTMLButtonElement;
   private errorEl!: HTMLElement;
   private errorText!: HTMLElement;
@@ -363,6 +405,7 @@ export class ConversationalPanel {
   constructor(cfg: ConversationalPanelConfig) {
     this.cfg = cfg;
     this.container = cfg.container;
+    this.selectedVoice = cfg.voice || 'M1';
     injectStyles();
     this.buildDOM();
   }
@@ -381,9 +424,9 @@ export class ConversationalPanel {
         <div class="cv-curtain-bg"></div>
         <div class="cv-curtain-overlay"></div>
         <div class="cv-curtain-content">
-          <h3 class="cv-curtain-title">${this.esc(this.cfg.title)}</h3>
-          <p class="cv-curtain-desc">${this.esc(this.cfg.description)}</p>
-          <button class="cv-curtain-btn">
+          <h3 class="cv-curtain-title">${this.esc(this.cfg.title || "Voice Chat")}</h3>
+          <p class="cv-curtain-desc">${this.esc(this.cfg.description || "")}</p>
+           <button class="cv-curtain-btn">
             <span>Start Conversation</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="20" height="20">
               <path d="M5 12h14M12 5l7 7-7 7"/>
@@ -401,7 +444,7 @@ export class ConversationalPanel {
         </div>
       </div>
       <div class="cv-header">
-        <h2 class="cv-title">${this.esc(this.cfg.title)} <span class="cv-timer">00:00</span></h2>
+        <h2 class="cv-title">${this.esc(this.cfg.title || "Voice Chat")} <span class="cv-timer">00:00</span></h2>
       </div>
       <div class="cv-visualizer-wrap">
         <canvas class="cv-canvas"></canvas>
@@ -493,7 +536,7 @@ export class ConversationalPanel {
         apiKey: this.cfg.apiKey,
         tools: this.cfg.tools,
         prompt: this.cfg.prompt,
-        voice: this.cfg.voice || 'M1',
+        voice: this.selectedVoice,
         language: this.cfg.language || 'en',
         onStatusChange: (status: string) => {
           this.el.classList.remove('cv-is-speaking', 'cv-is-thinking');
@@ -633,6 +676,7 @@ export class ConversationalPanel {
     if (h2) h2.innerHTML = `${this.esc(title)} <span class="cv-timer">${this.timerEl?.textContent || '00:00'}</span>`;
   }
 
+  /** Select a voice from the picker */
   /** Update description text */
   setDescription(desc: string) {
     this.cfg.description = desc;
