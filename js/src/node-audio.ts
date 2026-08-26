@@ -3,6 +3,18 @@
 import { AudioManager } from './client';
 import { AUDIO_CONFIG } from './types';
 
+// 'speaker' and 'node-record-lpcm16' are optional peer dependencies — Node.js
+// users who want managed microphone/speaker I/O install them themselves (see
+// the warnings below); they are not bundled or required by this package, and
+// aren't installed while building the SDK itself. Importing by a non-literal
+// string (rather than `import('speaker')` directly) keeps TypeScript from
+// trying to resolve either module's types at the SDK's own build time —
+// this always resolves to `any`, and at runtime falls through to the
+// .catch(() => null) handling below if the consumer hasn't installed it.
+function optionalImport(moduleName: string): Promise<any> {
+  return import(moduleName);
+}
+
 /**
  * Node.js-specific AudioManager implementation.
  * Note: These require 'speaker' and 'node-record-lpcm16' to be installed by the user.
@@ -20,7 +32,7 @@ export class NodeAudioManager implements AudioManager {
     try {
       // Dynamic imports to avoid crashing if dependencies are missing at build time
       // The user must install these manually for managed Node.js audio
-      const Speaker = await import('speaker').catch(() => null);
+      const Speaker = await optionalImport('speaker').catch(() => null);
       if (!Speaker) {
         console.warn('⚠️  Package "speaker" is missing. Hardware output will be disabled.');
         console.warn('👉 Run: npm install speaker');
@@ -34,7 +46,7 @@ export class NodeAudioManager implements AudioManager {
     if (this.isListening) return;
 
     try {
-      const recorder = await import('node-record-lpcm16').catch(() => null);
+      const recorder = await optionalImport('node-record-lpcm16').catch(() => null);
       if (!recorder) {
         throw new Error('Package "node-record-lpcm16" is missing. Microphone input failed.\n👉 Run: npm install node-record-lpcm16');
       }
@@ -72,7 +84,7 @@ export class NodeAudioManager implements AudioManager {
   async playAudio(pcm16Data: Uint8Array): Promise<void> {
     try {
       if (!this.speaker) {
-        const Speaker = (await import('speaker')).default;
+        const Speaker = (await optionalImport('speaker')).default;
         this.speaker = new Speaker({
           channels: AUDIO_CONFIG.CHANNELS,
           bitDepth: 16,

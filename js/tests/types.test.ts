@@ -46,9 +46,11 @@ describe('SDK Types and Enums', () => {
       expect(Language.KOREAN).toBe('ko');
     });
 
-    it('should have 5 languages total', () => {
+    it('should have all supported languages', () => {
+      // Update this count when Language gains/loses a member, alongside the
+      // backend's own language list (pkg/orchestrator's Language type).
       const languages = Object.values(Language);
-      expect(languages).toHaveLength(5);
+      expect(languages).toHaveLength(32);
     });
   });
 

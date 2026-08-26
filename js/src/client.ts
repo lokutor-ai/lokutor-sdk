@@ -16,6 +16,9 @@ import {
   ServerConfig,
   ServerStatus,
   HealthStatus,
+  TranscribeOptions,
+  TranscribeResult,
+  SpeechToTextOptions,
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
 
@@ -95,6 +98,16 @@ function base64ToUint8Array(base64: string): Uint8Array {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
+}
+
+// Browser-compatible Uint8Array to base64
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binaryString = '';
+  const chunkSize = 0x8000; // avoid call-stack limits on String.fromCharCode(...large array)
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binaryString += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binaryString);
 }
 
 function normalizeVisemes(payload: any): Viseme[] {
@@ -962,6 +975,198 @@ export class TTSClient {
 }
 
 /**
+ * Standalone speech-to-text — batch transcription of a single, complete
+ * audio clip (POST /stt/transcribe). No LLM, no TTS, no voice-agent session.
+ * For continuous/live transcription (e.g. dictation, live captions), use
+ * SpeechToTextClient instead.
+ */
+export class STTClient {
+  private apiKey: string;
+  private baseUrl: string;
+
+  constructor(config: { apiKey: string; serverUrl?: string }) {
+    this.apiKey = config.apiKey;
+    this.baseUrl = wsToHttp(config.serverUrl || DEFAULT_URLS.STT).replace(/\/ws\/stt\/?$/, '');
+  }
+
+  /**
+   * Transcribe a complete audio clip. Pass a Blob/File (e.g. from a file
+   * input or MediaRecorder) for WAV/compressed audio, or a raw PCM16
+   * buffer with `format: "pcm16"` and `sampleRate` set.
+   */
+  public async transcribe(options: TranscribeOptions): Promise<TranscribeResult> {
+    const url = `${this.baseUrl}/stt/transcribe`;
+    let res: Response;
+
+    if (typeof Blob !== 'undefined' && options.audio instanceof Blob) {
+      const form = new FormData();
+      form.append('audio', options.audio, 'audio.wav');
+      if (options.language) form.append('lang', options.language);
+      if (options.sampleRate) form.append('sample_rate', String(options.sampleRate));
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'X-API-Key': this.apiKey },
+        body: form,
+      });
+    } else {
+      const bytes = options.audio instanceof Uint8Array
+        ? options.audio
+        : new Uint8Array(options.audio as ArrayBuffer);
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio: uint8ArrayToBase64(bytes),
+          format: options.format || 'pcm16',
+          sample_rate: options.sampleRate,
+          lang: options.language,
+        }),
+      });
+    }
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new LokutorError('internal.error', `HTTP ${res.status} from ${url}`, {
+        detail,
+        retryable: res.status >= 500,
+      });
+    }
+
+    const data = await res.json();
+    return {
+      text: data.text ?? '',
+      latencyMs: data.latency_ms ?? 0,
+      engine: data.engine ?? '',
+      sampleRate: data.sample_rate ?? 0,
+      language: data.language ?? '',
+      durationSeconds: data.duration_seconds ?? 0,
+      segments: data.segments,
+    };
+  }
+}
+
+/**
+ * Continuous speech-to-text (WS /ws/stt) — streams microphone audio to the
+ * server and receives partial transcripts while the user is speaking and a
+ * final transcript when the server's VAD detects the utterance ended.
+ * Standalone: no LLM turn, no TTS, no voice-agent session — just
+ * transcription. For a single pre-recorded clip, use STTClient instead.
+ */
+export class SpeechToTextClient {
+  private apiKey: string;
+  private serverUrl: string;
+  private language?: Language;
+  private vad: 'silero' | 'rms';
+  private onPartialTranscript?: (text: string) => void;
+  private onFinalTranscript?: (text: string) => void;
+  private onError?: (error: LokutorError) => void;
+  private onStatusChange?: (status: 'connecting' | 'connected' | 'disconnected') => void;
+
+  private ws: WebSocket | null = null;
+  private audioManager: AudioManager | null = null;
+  private isConnected = false;
+
+  constructor(config: SpeechToTextOptions) {
+    this.apiKey = config.apiKey;
+    this.serverUrl = config.serverUrl || DEFAULT_URLS.STT;
+    this.language = config.language;
+    this.vad = config.vad || 'silero';
+    this.onPartialTranscript = config.onPartialTranscript;
+    this.onFinalTranscript = config.onFinalTranscript;
+    this.onError = config.onError;
+    this.onStatusChange = config.onStatusChange;
+  }
+
+  /**
+   * Connect and start streaming microphone audio.
+   * @param customAudioManager Optional replacement for the default audio hardware handler (e.g. NodeAudioManager for CLI use)
+   */
+  public async connect(customAudioManager?: AudioManager): Promise<boolean> {
+    this.audioManager = customAudioManager
+      || (typeof window !== 'undefined' ? new BrowserAudioManager() : null);
+    if (!this.audioManager) {
+      throw new LokutorError('internal.error', 'No audio manager available — pass one explicitly outside the browser (e.g. NodeAudioManager).');
+    }
+    await this.audioManager.init();
+
+    this.onStatusChange?.('connecting');
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
+      try {
+        let url = this.serverUrl;
+        const separator = url.includes('?') ? '&' : '?';
+        url += `${separator}api_key=${this.apiKey}`;
+
+        this.ws = new WebSocket(url);
+
+        this.ws.onopen = async () => {
+          this.isConnected = true;
+          this.onStatusChange?.('connected');
+          this.ws!.send(JSON.stringify({ lang: this.language || Language.ENGLISH, vad: this.vad }));
+
+          await this.audioManager!.startMicrophone((data) => {
+            if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
+              this.ws.send(data);
+            }
+          });
+
+          settle(() => resolve(true));
+        };
+
+        this.ws.onmessage = (event) => {
+          if (typeof event.data !== 'string') return; // this endpoint only ever sends JSON text frames
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'transcript') {
+              if (msg.isFinal) {
+                this.onFinalTranscript?.(msg.data ?? '');
+              } else {
+                this.onPartialTranscript?.(msg.data ?? '');
+              }
+            } else if (msg.type === 'error') {
+              this.onError?.(new LokutorError('internal.error', msg.data ?? 'STT error'));
+            }
+          } catch {
+            // ignore malformed frames
+          }
+        };
+
+        this.ws.onerror = (err) => {
+          const lokutorErr = new LokutorError('internal.error', 'WebSocket error', { original: err });
+          this.onError?.(lokutorErr);
+          settle(() => reject(lokutorErr));
+        };
+
+        this.ws.onclose = () => {
+          this.isConnected = false;
+          this.onStatusChange?.('disconnected');
+        };
+      } catch (err) {
+        settle(() => reject(err));
+      }
+    });
+  }
+
+  /** Force-finalize whatever utterance is currently in progress. */
+  public endUtterance(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'end' }));
+    }
+  }
+
+  public disconnect(): void {
+    this.isConnected = false;
+    this.audioManager?.stopMicrophone();
+    this.audioManager?.cleanup();
+    this.ws?.close();
+    this.ws = null;
+  }
+}
+
+/**
  * Quick function to start a conversation (requires manual audio piping in JS)
  */
 export async function simpleConversation(config: LokutorConfig & { prompt: string }) {
@@ -976,4 +1181,12 @@ export async function simpleConversation(config: LokutorConfig & { prompt: strin
 export async function simpleTTS(options: SynthesizeOptions & { apiKey: string, onAudio: (buf: Uint8Array) => void }) {
   const client = new TTSClient({ apiKey: options.apiKey });
   return client.synthesize(options);
+}
+
+/**
+ * Quick function for standalone, one-shot transcription of a complete audio clip.
+ */
+export async function simpleTranscribe(options: TranscribeOptions & { apiKey: string; serverUrl?: string }): Promise<TranscribeResult> {
+  const client = new STTClient({ apiKey: options.apiKey, serverUrl: options.serverUrl });
+  return client.transcribe(options);
 }

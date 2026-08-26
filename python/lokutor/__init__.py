@@ -2,7 +2,15 @@
 Lokutor Python SDK - Official client for Lokutor real-time voice and TTS
 """
 
-from .client import VoiceAgentClient, TTSClient, simple_conversation, simple_tts
+from .client import (
+    VoiceAgentClient,
+    TTSClient,
+    STTClient,
+    SpeechToTextClient,
+    simple_conversation,
+    simple_tts,
+    simple_transcribe,
+)
 from .config import VoiceStyle, Language, Viseme
 from .audio_utils import (
     pcm16_to_float32,
@@ -19,8 +27,11 @@ from .audio_utils import (
 __all__ = [
     "VoiceAgentClient",
     "TTSClient",
+    "STTClient",
+    "SpeechToTextClient",
     "simple_conversation",
     "simple_tts",
+    "simple_transcribe",
     "VoiceStyle",
     "Language",
     "Viseme",

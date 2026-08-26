@@ -9,6 +9,8 @@ import os
 import time
 import queue
 import threading
+import urllib.request
+import urllib.error
 from threading import Thread, Event
 from typing import Callable, Optional
 
@@ -26,6 +28,7 @@ from .config import (
     CONNECTION_TIMEOUT,
     DEFAULT_VOICE_AGENT_URL,
     DEFAULT_TTS_URL,
+    DEFAULT_STT_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -455,6 +458,10 @@ class VoiceAgentClient:
         self.running = False
 
 
+def _ws_to_http(url: str) -> str:
+    return url.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+
+
 class TTSClient:
     """
     Client for standalone Text-to-Speech synthesis
@@ -553,6 +560,163 @@ class TTSClient:
         return ws
 
 
+class STTClient:
+    """
+    Standalone speech-to-text: batch transcription of a single, complete
+    audio clip (POST /stt/transcribe). No LLM, no TTS, no voice-agent
+    session. For continuous/live transcription, use SpeechToTextClient.
+    """
+    def __init__(self, api_key: str, server_url: str = DEFAULT_STT_URL):
+        self.api_key = api_key
+        # server_url is the WS endpoint (matching TTSClient's convention);
+        # the batch endpoint is a sibling REST route on the same host.
+        base = _ws_to_http(server_url).rsplit("/ws/stt", 1)[0]
+        self.transcribe_url = f"{base}/stt/transcribe"
+
+    def transcribe(
+        self,
+        audio: bytes,
+        format: str = "wav",
+        sample_rate: Optional[int] = None,
+        language: Optional[Language] = None,
+        timeout: float = 30.0,
+    ) -> dict:
+        """
+        Transcribe a complete audio clip.
+
+        :param audio: Raw audio bytes — a full WAV file (format="wav") or raw
+            PCM16 samples (format="pcm16", sample_rate required).
+        :returns: dict with keys text, latency_ms, engine, sample_rate,
+            language, duration_seconds, and optionally segments.
+        """
+        body = {
+            "audio": base64.b64encode(audio).decode("ascii"),
+            "format": format,
+        }
+        if sample_rate is not None:
+            body["sample_rate"] = sample_rate
+        if language is not None:
+            body["lang"] = language.value
+
+        req = urllib.request.Request(
+            self.transcribe_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": self.api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"transcribe failed: HTTP {e.code}: {detail}") from e
+
+
+class SpeechToTextClient:
+    """
+    Continuous speech-to-text (WS /ws/stt): streams microphone audio to the
+    server and receives partial transcripts while the user is speaking and a
+    final transcript when the server's VAD detects the utterance ended.
+    Standalone: no LLM turn, no TTS, no voice-agent session — just
+    transcription. For a single pre-recorded clip, use STTClient instead.
+    """
+    def __init__(
+        self,
+        api_key: str,
+        server_url: str = DEFAULT_STT_URL,
+        language: Language = Language.ENGLISH,
+        vad: str = "silero",
+        on_partial_transcript: Optional[Callable[[str], None]] = None,
+        on_final_transcript: Optional[Callable[[str], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ):
+        self.api_key = api_key
+        self.server_url = server_url
+        self.language = language
+        self.vad = vad
+        self.on_partial_transcript = on_partial_transcript
+        self.on_final_transcript = on_final_transcript
+        self.on_error = on_error
+
+        self.audio = _AudioIO()
+        self.ws: Optional[websocket.WebSocketApp] = None
+        self.running = False
+        self._mic_thread: Optional[Thread] = None
+
+    def start(self):
+        """Connect and start streaming microphone audio (non-blocking)."""
+        self.running = True
+
+        def on_open(ws):
+            ws.send(json.dumps({"lang": self.language.value, "vad": self.vad}))
+            self.audio.start_input()
+            self._mic_thread = Thread(target=self._mic_loop, daemon=True)
+            self._mic_thread.start()
+
+        def on_message(ws, message):
+            if not isinstance(message, str):
+                return
+            try:
+                msg = json.loads(message)
+            except json.JSONDecodeError:
+                return
+            if msg.get("type") == "transcript":
+                if msg.get("isFinal"):
+                    if self.on_final_transcript:
+                        self.on_final_transcript(msg.get("data", ""))
+                else:
+                    if self.on_partial_transcript:
+                        self.on_partial_transcript(msg.get("data", ""))
+            elif msg.get("type") == "error" and self.on_error:
+                self.on_error(msg.get("data", "STT error"))
+
+        def on_error(ws, error):
+            logger.error(f"STT WebSocket error: {error}")
+            if self.on_error:
+                self.on_error(str(error))
+
+        def on_close(ws, *args):
+            logger.debug("STT connection closed")
+            self.running = False
+
+        headers = [f"X-API-Key: {self.api_key}"] if self.api_key else None
+        self.ws = websocket.WebSocketApp(
+            self.server_url,
+            header=headers,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+        )
+        ws_thread = Thread(target=self.ws.run_forever, daemon=True)
+        ws_thread.start()
+
+    def _mic_loop(self):
+        while self.running:
+            chunk = self.audio.read()
+            if not chunk:
+                continue
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                try:
+                    self.ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
+                except Exception as e:
+                    logger.error(f"Error sending audio: {e}")
+
+    def end_utterance(self):
+        """Force-finalize whatever utterance is currently in progress."""
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            self.ws.send(json.dumps({"type": "end"}))
+
+    def stop(self):
+        self.running = False
+        self.audio.stop()
+        if self.ws:
+            self.ws.close()
+
+
 def simple_conversation(
     api_key: str,
     prompt: str = "You are a helpful AI assistant",
@@ -577,3 +741,14 @@ def simple_tts(
 ):
     client = TTSClient(api_key=api_key)
     client.synthesize(text=text, voice=voice, language=language, play=play, block=True)
+
+
+def simple_transcribe(
+    audio: bytes,
+    api_key: str,
+    format: str = "wav",
+    language: Optional[Language] = None,
+) -> dict:
+    """Quick one-shot transcription of a complete audio clip."""
+    client = STTClient(api_key=api_key)
+    return client.transcribe(audio, format=format, language=language)

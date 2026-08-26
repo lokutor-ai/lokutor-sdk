@@ -76,6 +76,7 @@ export const AUDIO_CONFIG = {
 export const DEFAULT_URLS = {
   VOICE_AGENT: "wss://api.lokutor.com/ws/agent",
   TTS: "wss://api.lokutor.com/ws/tts",
+  STT: "wss://api.lokutor.com/ws/stt",
 };
 
 /**
@@ -101,6 +102,63 @@ export interface SynthesizeOptions {
   speed?: number;
   steps?: number;
   visemes?: boolean;
+}
+
+/**
+ * Options for one-shot batch transcription via STTClient.transcribe()
+ * (POST /stt/transcribe) — pass a complete recording and get a transcript
+ * back. For continuous/live transcription, use SpeechToTextClient instead.
+ */
+export interface TranscribeOptions {
+  /** Complete audio to transcribe. A Blob/File (e.g. from a file input or
+   *  MediaRecorder) is sent as multipart/form-data; a raw PCM16 buffer is
+   *  sent as base64 JSON with `format: "pcm16"`. */
+  audio: Blob | ArrayBuffer | Uint8Array;
+  /** Required when `audio` is raw PCM16 (ignored for WAV/Blob input, whose
+   *  rate is read from the file header). */
+  sampleRate?: number;
+  /** Set when passing a raw PCM16 buffer instead of a WAV Blob. */
+  format?: 'wav' | 'pcm16';
+  language?: Language;
+}
+
+/** One transcribed segment with timing, when the engine provides them. */
+export interface TranscribeSegment {
+  text: string;
+  start: number;
+  end: number;
+  duration: number;
+}
+
+/** Result of STTClient.transcribe() — mirrors POST /stt/transcribe's response body. */
+export interface TranscribeResult {
+  text: string;
+  latencyMs: number;
+  engine: string;
+  sampleRate: number;
+  language: string;
+  durationSeconds: number;
+  segments?: TranscribeSegment[];
+}
+
+/**
+ * Continuous speech-to-text options (WS /ws/stt) — standalone transcription
+ * with server-side VAD, independent of the full voice-agent pipeline (no
+ * LLM turn, no TTS). Use this for live captioning/dictation; use
+ * STTClient.transcribe() for a single pre-recorded clip.
+ */
+export interface SpeechToTextOptions {
+  apiKey: string;
+  serverUrl?: string;
+  language?: Language;
+  /** VAD engine: "silero" (default, neural) or "rms" (energy-threshold fallback). */
+  vad?: 'silero' | 'rms';
+  /** Fires repeatedly while the user is mid-utterance, with the best partial guess so far. */
+  onPartialTranscript?: (text: string) => void;
+  /** Fires once VAD detects the utterance ended. */
+  onFinalTranscript?: (text: string) => void;
+  onError?: (error: LokutorError) => void;
+  onStatusChange?: (status: 'connecting' | 'connected' | 'disconnected') => void;
 }
 
 /**

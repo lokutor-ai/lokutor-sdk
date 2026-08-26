@@ -77,6 +77,7 @@ CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 # Default URLs
 DEFAULT_VOICE_AGENT_URL = "wss://api.lokutor.com/ws/agent"
 DEFAULT_TTS_URL = "wss://api.lokutor.com/ws/tts"
+DEFAULT_STT_URL = "wss://api.lokutor.com/ws/stt"
 
 # Timeouts
 CONNECTION_TIMEOUT = 10  # seconds
