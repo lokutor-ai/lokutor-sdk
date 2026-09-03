@@ -30,6 +30,10 @@ export class BrowserAudioManager {
   private mediaStreamAudioSourceNode: MediaStreamAudioSourceNode | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private analyserNode: AnalyserNode | null = null;
+  // Reused across getAmplitude() calls instead of allocating a new
+  // Uint8Array on every call — this runs once per animation frame (~60/sec)
+  // from the visualizer, on the same main thread as audio capture.
+  private amplitudeBuffer: Uint8Array<ArrayBuffer> | null = null;
   private mediaStream: MediaStream | null = null;
   private resampler: StreamResampler | null = null;
 
@@ -123,7 +127,17 @@ export class BrowserAudioManager {
       // Create script processor for PCM extraction
       // Note: ScriptProcessorNode is deprecated but widely supported.
       // AudioWorklet would be better but requires additional setup.
-      const bufferSize = 4096;
+      //
+      // 1024 samples is ~21ms at a typical 48kHz hardware rate — matched to
+      // AUDIO_CONFIG.CHUNK_DURATION_MS (20ms), the granularity the backend's
+      // VAD is tuned around. The previous 4096 was ~85ms of audio buffered
+      // before a single byte reached the server: on top of adding raw
+      // latency, ScriptProcessorNode callbacks run on the main thread, so
+      // that much buffering meant audio could arrive in large, uneven
+      // bursts whenever the main thread was briefly busy (a re-render, the
+      // visualizer) instead of a steady stream — exactly the kind of
+      // mistimed input that can trip server-side VAD into a false barge-in.
+      const bufferSize = 1024;
       this.scriptProcessor = this.audioContext!.createScriptProcessor(
         bufferSize,
         1, // input channels
@@ -339,10 +353,12 @@ export class BrowserAudioManager {
   getAmplitude(): number {
     if (!this.analyserNode) return 0;
 
-    const dataArray = new Uint8Array(this.analyserNode.frequencyBinCount);
-    this.analyserNode.getByteTimeDomainData(dataArray);
+    if (!this.amplitudeBuffer || this.amplitudeBuffer.length !== this.analyserNode.frequencyBinCount) {
+      this.amplitudeBuffer = new Uint8Array(this.analyserNode.frequencyBinCount);
+    }
+    this.analyserNode.getByteTimeDomainData(this.amplitudeBuffer);
 
-    const rms = calculateRMS(dataArray);
+    const rms = calculateRMS(this.amplitudeBuffer);
     return Math.min(rms * 10, 1); // Boost for visualization
   }
 
