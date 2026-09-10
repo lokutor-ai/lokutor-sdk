@@ -71,6 +71,42 @@ describe('BrowserAudioManager', () => {
       manager.setMuted(false);
       expect(manager.isMicMuted()).toBe(false);
     });
+
+    // Regression test: muting used to stop sending audio chunks entirely
+    // (`if (this.isMuted) return;` before any data reached onAudioInput).
+    // The server's turn-taking is purely reactive to incoming chunks, so
+    // that left conversations stuck mid-turn if the user muted instead of
+    // just going quiet — the server never got a chance to observe silence
+    // and hand off. Muted chunks must still flow, just zeroed.
+    it('should keep sending chunks while muted, but silenced', () => {
+      const manager = new BrowserAudioManager();
+      const received: Uint8Array[] = [];
+
+      // Reach into private state the way `startMicrophone` would set it up,
+      // without needing a real AudioContext/getUserMedia in this test env.
+      (manager as any).onAudioInput = (data: Uint8Array) => received.push(data);
+      (manager as any).audioContext = {};
+      (manager as any).isListening = true;
+      (manager as any).resampler = null;
+
+      const inputSamples = new Float32Array(128).fill(0.5); // clearly non-silent
+      const fakeEvent = {
+        inputBuffer: { getChannelData: () => inputSamples },
+        outputBuffer: { getChannelData: () => new Float32Array(128) },
+      };
+
+      manager.setMuted(true);
+      (manager as any)._processAudioInput(fakeEvent);
+
+      expect(received).toHaveLength(1); // chunk was sent, not dropped
+      const view = new Int16Array(received[0].buffer, received[0].byteOffset, received[0].byteLength / 2);
+      expect(Array.from(view).every((s) => s === 0)).toBe(true); // but silent
+
+      manager.setMuted(false);
+      (manager as any)._processAudioInput(fakeEvent);
+      const view2 = new Int16Array(received[1].buffer, received[1].byteOffset, received[1].byteLength / 2);
+      expect(Array.from(view2).some((s) => s !== 0)).toBe(true); // real audio flows when unmuted
+    });
   });
 
   describe('Amplitude Tracking', () => {

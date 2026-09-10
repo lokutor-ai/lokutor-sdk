@@ -179,7 +179,6 @@ export class BrowserAudioManager {
    */
   private _processAudioInput(event: AudioProcessingEvent): void {
     if (!this.onAudioInput || !this.audioContext || !this.isListening) return;
-    if (this.isMuted) return;
 
     const inputBuffer = event.inputBuffer;
     const inputData = inputBuffer.getChannelData(0);
@@ -198,6 +197,18 @@ export class BrowserAudioManager {
     }
 
     if (processedData.length === 0) return; // Need more data for resampler
+
+    // While muted, keep sending — silent — chunks instead of sending
+    // nothing at all (the old `if (this.isMuted) return` above this).
+    // The server's turn-taking/VAD is purely reactive to incoming chunks:
+    // if the client stops sending entirely mid-utterance, the server never
+    // observes the silence it needs to close out the turn, so muting
+    // mid-sentence left the conversation stuck instead of handing off to
+    // the agent. Explicitly zeroed here rather than relying solely on the
+    // disabled MediaStreamTrack to already read as silence.
+    if (this.isMuted) {
+      processedData = new Float32Array(processedData.length);
+    }
 
     // Convert Float32 to Int16 PCM
     const int16Data = float32ToPcm16(processedData);
