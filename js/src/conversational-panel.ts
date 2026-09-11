@@ -107,12 +107,6 @@ const PANEL_CSS = /*css*/ `
     gap: 1rem;
     letter-spacing: -0.02em;
   }
-  .cv-title .cv-timer {
-    font-variant-numeric: tabular-nums;
-    color: var(--cv-accent);
-    font-weight: 400;
-    opacity: 0.8;
-  }
   .cv-visualizer-wrap {
     position: absolute;
     top: 50%;
@@ -261,7 +255,6 @@ const PANEL_CSS = /*css*/ `
     .cv-visualizer-wrap { width: 60px; height: 60px; }
     .cv-header { padding-top: 0.75rem; }
     .cv-title { font-size: 0.7rem; gap: 0.3rem; }
-    .cv-title .cv-timer { display: none; }
     .cv-controls { gap: 0.6rem; padding-bottom: 0.6rem; }
     .cv-pill { padding: 0.15rem 0.4rem; gap: 0.3rem; }
     .cv-btn { padding: 0.2rem 0.4rem; font-size: 0.6rem; gap: 0; }
@@ -279,7 +272,6 @@ const PANEL_CSS = /*css*/ `
     .cv-visualizer-wrap { width: clamp(80px, 35cqw, 140px); height: clamp(80px, 35cqw, 140px); }
     .cv-header { padding-top: 0.8rem; }
     .cv-title { font-size: clamp(0.7rem, 2.5cqw, 1rem); gap: 0.4rem; }
-    .cv-title .cv-timer { font-size: 0.65em; }
     .cv-controls { gap: clamp(0.6rem, 1.5cqw, 1rem); padding-bottom: clamp(0.6rem, 1.5cqw, 1rem); }
     .cv-pill { padding: clamp(0.15rem, 0.5cqw, 0.25rem) clamp(0.35rem, 1cqw, 0.6rem); font-size: 0.65rem; gap: 0.3rem; }
     .cv-btn { padding: clamp(0.2rem, 0.5cqw, 0.3rem) clamp(0.35rem, 1cqw, 0.6rem); font-size: clamp(0.6rem, 1.2cqw, 0.7rem); }
@@ -297,7 +289,6 @@ const PANEL_CSS = /*css*/ `
     .cv-visualizer-wrap { width: clamp(100px, 40cqw, 200px); height: clamp(100px, 40cqw, 200px); }
     .cv-header { padding-top: clamp(1rem, 1.5cqw, 1.5rem); }
     .cv-title { font-size: clamp(0.9rem, 3cqw, 1.3rem); gap: clamp(0.4rem, 1cqw, 0.75rem); }
-    .cv-title .cv-timer { font-size: 0.85em; }
     .cv-controls { gap: clamp(0.8rem, 1.5cqw, 1.2rem); padding-bottom: clamp(0.8rem, 1.5cqw, 1.2rem); }
     .cv-pill { padding: clamp(0.2rem, 0.75cqw, 0.3rem) clamp(0.5rem, 1.2cqw, 0.75rem); font-size: 0.7rem; }
     .cv-btn { padding: clamp(0.25rem, 0.75cqw, 0.35rem) clamp(0.5rem, 1.2cqw, 0.75rem); font-size: clamp(0.65rem, 1.2cqw, 0.8rem); }
@@ -313,7 +304,6 @@ const PANEL_CSS = /*css*/ `
     .cv-visualizer-wrap { width: clamp(140px, 45cqw, 300px); height: clamp(140px, 45cqw, 300px); }
     .cv-header { padding-top: clamp(1.5rem, 2cqw, 2rem); }
     .cv-title { font-size: clamp(1rem, 3cqw, 1.8rem); gap: clamp(0.75rem, 1.5cqw, 1.2rem); }
-    .cv-title .cv-timer { font-size: 0.9em; }
     .cv-controls { gap: clamp(1.2rem, 2cqw, 1.8rem); padding-bottom: clamp(1.2rem, 2cqw, 1.8rem); }
     .cv-pill { padding: clamp(0.3rem, 0.8cqw, 0.4rem) clamp(0.75rem, 1.2cqw, 1rem); font-size: 0.85rem; gap: 0.75rem; }
     .cv-btn { padding: clamp(0.35rem, 0.8cqw, 0.4rem) clamp(0.75rem, 1.2cqw, 1rem); font-size: clamp(0.75rem, 1.2cqw, 0.9rem); }
@@ -387,7 +377,6 @@ export class ConversationalPanel {
   private startBtn!: HTMLButtonElement;
   private errorEl!: HTMLElement;
   private errorText!: HTMLElement;
-  private timerEl!: HTMLElement;
   private canvas!: HTMLCanvasElement;
   private muteBtn!: HTMLElement;
   private muteSvg!: SVGElement;
@@ -444,7 +433,7 @@ export class ConversationalPanel {
         </div>
       </div>
       <div class="cv-header">
-        <h2 class="cv-title">${this.esc(this.cfg.title || "Voice Chat")} <span class="cv-timer">00:00</span></h2>
+        <h2 class="cv-title">${this.esc(this.cfg.title || "Voice Chat")}</h2>
       </div>
       <div class="cv-visualizer-wrap">
         <canvas class="cv-canvas"></canvas>
@@ -478,7 +467,6 @@ export class ConversationalPanel {
     this.startBtn = this.el.querySelector('.cv-curtain-btn')!;
     this.errorEl = this.el.querySelector('.cv-error')!;
     this.errorText = this.el.querySelector('.cv-error-text')!;
-    this.timerEl = this.el.querySelector('.cv-timer')!;
     this.canvas = this.el.querySelector('.cv-canvas')!;
     this.muteBtn = this.el.querySelector('.cv-btn--mute')!;
     this.muteSvg = this.muteBtn.querySelector('svg')!;
@@ -673,7 +661,7 @@ export class ConversationalPanel {
     this.cfg.title = title;
     this.curtainTitle.textContent = title;
     const h2 = this.el.querySelector('.cv-title');
-    if (h2) h2.innerHTML = `${this.esc(title)} <span class="cv-timer">${this.timerEl?.textContent || '00:00'}</span>`;
+    if (h2) h2.textContent = title;
   }
 
   /** Select a voice from the picker */
@@ -710,22 +698,15 @@ export class ConversationalPanel {
 
   // ─── internal helpers ────────────────────────────────────
 
-  private fmt(s: number): string {
-    const m = Math.floor(s / 60).toString().padStart(2, '0');
-    const sec = (s % 60).toString().padStart(2, '0');
-    return `${m}:${sec}`;
-  }
-
   private startTimer() {
+    // No visible countdown — this interval only enforces maxDuration and
+    // the silence timeout, both real safety/cost-control cutoffs, not UI.
     let elapsed = 0;
     const maxDur = this.cfg.maxDuration || 300;
     const silentMax = this.cfg.silenceTimeout || 60;
     this._lastSpeechTime = Date.now();
-    this.timerEl.textContent = this.fmt(maxDur);
     this.timerTicker = window.setInterval(() => {
       elapsed++;
-      const remaining = Math.max(0, maxDur - elapsed);
-      this.timerEl.textContent = this.fmt(remaining);
 
       if (elapsed >= maxDur) {
         this._locked = true;
