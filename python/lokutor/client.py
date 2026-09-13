@@ -492,7 +492,7 @@ class TTSClient:
             req = {
                 "text": text,
                 "voice": voice.value,
-                "lang": language.value,
+                "language": language.value,
                 "speed": speed,
                 "steps": steps,
                 "visemes": visemes,
@@ -596,7 +596,7 @@ class STTClient:
         if sample_rate is not None:
             body["sample_rate"] = sample_rate
         if language is not None:
-            body["lang"] = language.value
+            body["language"] = language.value
 
         req = urllib.request.Request(
             self.transcribe_url,
@@ -651,7 +651,7 @@ class SpeechToTextClient:
         self.running = True
 
         def on_open(ws):
-            ws.send(json.dumps({"lang": self.language.value, "vad": self.vad}))
+            ws.send(json.dumps({"language": self.language.value, "vad": self.vad}))
             self.audio.start_input()
             self._mic_thread = Thread(target=self._mic_loop, daemon=True)
             self._mic_thread.start()

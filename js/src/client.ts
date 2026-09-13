@@ -893,7 +893,7 @@ export class TTSClient {
           const req = {
             text: options.text,
             voice: options.voice || VoiceStyle.F1,
-            lang: options.language || Language.ENGLISH,
+            language: options.language || Language.ENGLISH,
             speed: options.speed || 1.05,
             steps: options.steps || 24,
             visemes: options.visemes || false
@@ -1001,7 +1001,7 @@ export class STTClient {
     if (typeof Blob !== 'undefined' && options.audio instanceof Blob) {
       const form = new FormData();
       form.append('audio', options.audio, 'audio.wav');
-      if (options.language) form.append('lang', options.language);
+      if (options.language) form.append('language', options.language);
       if (options.sampleRate) form.append('sample_rate', String(options.sampleRate));
       res = await fetch(url, {
         method: 'POST',
@@ -1019,7 +1019,7 @@ export class STTClient {
           audio: uint8ArrayToBase64(bytes),
           format: options.format || 'pcm16',
           sample_rate: options.sampleRate,
-          lang: options.language,
+          language: options.language,
         }),
       });
     }
@@ -1105,7 +1105,7 @@ export class SpeechToTextClient {
         this.ws.onopen = async () => {
           this.isConnected = true;
           this.onStatusChange?.('connected');
-          this.ws!.send(JSON.stringify({ lang: this.language || Language.ENGLISH, vad: this.vad }));
+          this.ws!.send(JSON.stringify({ language: this.language || Language.ENGLISH, vad: this.vad }));
 
           await this.audioManager!.startMicrophone((data) => {
             if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
