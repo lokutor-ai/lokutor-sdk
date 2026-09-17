@@ -1,5 +1,6 @@
 import {
   VoiceStyle,
+  VoiceId,
   Language,
   DEFAULT_URLS,
   LokutorConfig,
@@ -159,7 +160,7 @@ export class VoiceAgentClient {
   private apiKey: string;
   private agentId: string = "";
   public prompt: string;
-  public voice: VoiceStyle;
+  public voice: VoiceId;
   public language: Language;
   public tools: ToolDefinition[] = [];
 
@@ -197,7 +198,7 @@ export class VoiceAgentClient {
 
   constructor(config: LokutorConfig & {
     prompt: string,
-    voice?: VoiceStyle,
+    voice?: VoiceId,
     language?: Language,
     visemes?: boolean,
     onVisemes?: (visemes: Viseme[]) => void,
@@ -208,6 +209,9 @@ export class VoiceAgentClient {
     this.apiKey = config.apiKey;
     this.agentId = config.agentId || "";
     this.prompt = config.prompt;
+    // Default stays the Versa 1.x name on purpose: the server resolves F1 to the voice of the
+    // call's own language family (esca_f1 for Spanish, en_f1 for English), which adapts better
+    // than pinning one explicit voice here would.
     this.voice = config.voice || VoiceStyle.F1;
     this.language = config.language || Language.ENGLISH;
     this.serverUrl = config.serverUrl || DEFAULT_URLS.VOICE_AGENT;
@@ -767,7 +771,7 @@ export class VoiceAgentClient {
   /**
    * Change the voice style mid-conversation
    */
-  public updateVoice(voice: VoiceStyle) {
+  public updateVoice(voice: VoiceId) {
     this.voice = voice;
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
       this.ws.send(JSON.stringify({ type: 'voice', data: voice }));
@@ -853,7 +857,7 @@ export class TTSClient {
    */
   public synthesize(options: {
     text: string;
-    voice?: VoiceStyle;
+    voice?: VoiceId;
     language?: Language;
     speed?: number;
     steps?: number;

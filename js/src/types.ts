@@ -1,58 +1,93 @@
 /**
  * Available voice styles for the Lokutor AI Agent
  */
+/**
+ * Built-in voices.
+ *
+ * Versa 2.0 names each voice for the language its reference speaker was recorded in: `EN_*` are
+ * English speakers, `ESCA_*` Spanish/Catalan. That is a guide to how a voice sounds, not a
+ * restriction — the model is zero-shot, so any voice can speak any supported language.
+ *
+ * The bare `F1`–`M5` values are the Versa 1.x names. They still work: the server maps them onto
+ * the matching Versa 2.0 voice, keeping the language family of the call. Prefer the explicit names
+ * in new code.
+ *
+ * This enum is a convenience, not the full set — a cloned voice's id (`clone_…`) is also a valid
+ * `voice`, which is why the config fields accept any string.
+ */
 export enum VoiceStyle {
-  // Female voices
-  F1 = "F1",
-  F2 = "F2",
-  F3 = "F3",
-  F4 = "F4",
-  F5 = "F5",
+  // English reference speakers
+  EN_F1 = "en_f1",
+  EN_F2 = "en_f2",
+  EN_F3 = "en_f3",
+  EN_F4 = "en_f4",
+  EN_F5 = "en_f5",
+  EN_M1 = "en_m1",
+  EN_M2 = "en_m2",
+  EN_M3 = "en_m3",
+  EN_M4 = "en_m4",
+  EN_M5 = "en_m5",
 
-  // Male voices
+  // Spanish / Catalan reference speakers
+  ESCA_F1 = "esca_f1",
+  ESCA_F2 = "esca_f2",
+  ESCA_F3 = "esca_f3",
+  ESCA_F4 = "esca_f4",
+  ESCA_F5 = "esca_f5",
+  ESCA_M1 = "esca_m1",
+  ESCA_M2 = "esca_m2",
+  ESCA_M3 = "esca_m3",
+  ESCA_M4 = "esca_m4",
+  ESCA_M5 = "esca_m5",
+
+  /** @deprecated Versa 1.x name, mapped server-side. Use EN_F1 / ESCA_F1. */
+  F1 = "F1",
+  /** @deprecated Versa 1.x name, mapped server-side. */
+  F2 = "F2",
+  /** @deprecated Versa 1.x name, mapped server-side. */
+  F3 = "F3",
+  /** @deprecated Versa 1.x name, mapped server-side. */
+  F4 = "F4",
+  /** @deprecated Versa 1.x name, mapped server-side. */
+  F5 = "F5",
+  /** @deprecated Versa 1.x name, mapped server-side. */
   M1 = "M1",
+  /** @deprecated Versa 1.x name, mapped server-side. */
   M2 = "M2",
+  /** @deprecated Versa 1.x name, mapped server-side. */
   M3 = "M3",
+  /** @deprecated Versa 1.x name, mapped server-side. */
   M4 = "M4",
+  /** @deprecated Versa 1.x name, mapped server-side. */
   M5 = "M5",
 }
 
 /**
- * Supported languages for speech and text
+ * A voice id: one of {@link VoiceStyle}, or any id the API serves — including a cloned voice's
+ * `clone_…`. Typed to keep autocomplete on the enum while still accepting a runtime id.
+ */
+export type VoiceId = VoiceStyle | (string & {});
+
+/**
+ * Languages Lokutor supports.
+ *
+ * Nine, as of the Versa 2.0 rollout. The previous list carried 32 entries — Japanese, Chinese,
+ * Arabic, Russian and more — that no shipped model was trained to speak, and omitted Catalan,
+ * Galician and Basque, which it speaks well. Every one of these except English has a trained
+ * language token in the model; English is its unmarked base case.
+ *
+ * `GET /languages` serves the live list; prefer it over hardcoding if you support user choice.
  */
 export enum Language {
   ENGLISH = "en",
   SPANISH = "es",
-  FRENCH = "fr",
-  GERMAN = "de",
-  ITALIAN = "it",
+  CATALAN = "ca",
+  GALICIAN = "gl",
+  BASQUE = "eu",
   PORTUGUESE = "pt",
-  JAPANESE = "ja",
-  KOREAN = "ko",
-  CHINESE = "zh",
-  ARABIC = "ar",
-  BULGARIAN = "bg",
-  CROATIAN = "hr",
-  CZECH = "cs",
-  DANISH = "da",
-  DUTCH = "nl",
-  ESTONIAN = "et",
-  FINNISH = "fi",
-  GREEK = "el",
-  HINDI = "hi",
-  HUNGARIAN = "hu",
-  INDONESIAN = "id",
-  LATVIAN = "lv",
-  LITHUANIAN = "lt",
-  POLISH = "pl",
-  ROMANIAN = "ro",
-  RUSSIAN = "ru",
-  SLOVAK = "sk",
-  SLOVENIAN = "sl",
-  SWEDISH = "sv",
-  TURKISH = "tr",
-  UKRAINIAN = "uk",
-  VIETNAMESE = "vi",
+  FRENCH = "fr",
+  ITALIAN = "it",
+  GERMAN = "de",
 }
 
 /**
@@ -97,7 +132,7 @@ export interface LokutorConfig {
  */
 export interface SynthesizeOptions {
   text: string;
-  voice?: VoiceStyle;
+  voice?: VoiceId;
   language?: Language;
   speed?: number;
   steps?: number;
@@ -179,7 +214,7 @@ export interface BrowserAudioOptions {
  */
 export interface VoiceAgentOptions {
   prompt?: string;
-  voice?: VoiceStyle;
+  voice?: VoiceId;
   language?: Language;
   serverUrl?: string;
   visemes?: boolean;
