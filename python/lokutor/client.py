@@ -15,7 +15,17 @@ from threading import Thread, Event
 from typing import Callable, Optional
 
 import websocket
-import pyaudio
+
+# pyaudio needs PortAudio's C library at install time, which doesn't compile out of the box on a
+# clean machine without the portaudio system package. TTSClient and STTClient's actual API calls
+# (synthesize, transcribe existing audio bytes) never touch local mic/speaker hardware, so
+# `import lokutor` -- and using either client for exactly that -- must not require it. Only
+# constructing _AudioIO, for the optional "play/record through my local mic and speakers"
+# convenience, does; it checks for None and raises a clear, actionable error there.
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
 
 from .config import (
     VoiceStyle,
@@ -43,6 +53,13 @@ if not logger.handlers:
 class _AudioIO:
     """Hardware abstraction for audio with background playback"""
     def __init__(self):
+        if pyaudio is None:
+            raise ImportError(
+                "Local microphone/speaker audio needs the optional 'pyaudio' dependency "
+                "(and its PortAudio C library). Install with: pip install lokutor[audio]\n"
+                "(On Linux you may also need the system package, e.g. `apt install portaudio19-dev` "
+                "or `dnf install portaudio-devel`, before pip can build it.)"
+            )
         self.pa = pyaudio.PyAudio()
         self.in_stream = None
         self.out_stream = None

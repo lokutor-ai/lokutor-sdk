@@ -23,13 +23,20 @@ classifiers = [
 ]
 dependencies = [
     "websocket-client>=1.0.0,<2.0.0",
-    "pyaudio>=0.2.13",
     "python-dotenv>=1.0.0",
     "numpy>=1.24.4",
     "scipy>=1.10.1",
 ]
 
 [project.optional-dependencies]
+# Local microphone/speaker convenience (VoiceAgentClient's live audio loop, and
+# TTSClient/STTClient's optional local playback/capture helpers). Needs
+# PortAudio's C library, which isn't always present on a clean machine --
+# everything else in this package (calling the API, working with audio bytes
+# you already have) does not need it. pip install lokutor[audio]
+audio = [
+    "pyaudio>=0.2.13",
+]
 dev = [
     "pytest>=6.0",
     "pytest-asyncio>=0.18.0",
