@@ -30,14 +30,18 @@ const PANEL_CSS = /*css*/ `
   .cv-curtain .cv-curtain-bg {
     position: absolute;
     inset: 0;
-    background: url('/background_gradient.jpeg') center / cover no-repeat;
-    z-index: -1;
+    background: var(--cv-accent);
+    z-index: -2;
   }
   .cv-curtain .cv-curtain-overlay {
     position: absolute;
     inset: 0;
-    background: var(--cv-accent);
-    opacity: 0.35;
+    /* Fractal-noise grain, tinted white and blended in soft-light -- the same treatment the rest
+       of the product uses for a textured accent fill, so the curtain reads as the agent's own
+       color instead of a flat tint over a stock photo. */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 160px 160px;
+    background-blend-mode: soft-light;
     z-index: -1;
   }
   .cv-curtain.is-up { transform: translateY(-100%); }
@@ -119,17 +123,6 @@ const PANEL_CSS = /*css*/ `
     justify-content: center;
     z-index: 10;
     transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  .cv-is-speaking .cv-visualizer-wrap {
-    animation: cv-pulse 2.5s infinite ease-in-out;
-  }
-  .cv-is-thinking .cv-visualizer-wrap {
-    opacity: 0.5;
-    transform: translate(-50%, -50%) scale(0.9);
-  }
-  @keyframes cv-pulse {
-    0%, 100% { transform: translate(-50%, -50%) scale(1); }
-    50% { transform: translate(-50%, -50%) scale(1.05); }
   }
   .cv-canvas {
     width: 100% !important;
