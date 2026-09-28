@@ -1,3 +1,5 @@
+import { requestMicrophone } from './browser-audio';
+
 const PANEL_CSS = /*css*/ `
   .cv-panel {
     position: relative;
@@ -349,7 +351,11 @@ export interface ConversationalPanelConfig {
   backgroundColor?: string;
   /** API key for connecting to the voice agent */
   apiKey: string;
-  /** Reference to the ConvoAgent class */
+  /**
+   * Reference to the ConvoAgent class. Its constructor options include `microphone`, a
+   * Promise<MediaStream> requested inside the Start tap (see requestMicrophone); pass it on to
+   * BrowserAudioManager as `microphone` so the call uses it instead of asking again later.
+   */
   ConvoAgent: any;
   /** Reference to the SphereVisualizer class */
   SphereVisualizer: any;
@@ -363,6 +369,20 @@ export interface ConversationalPanelConfig {
   maxDuration?: number;
   /** Seconds of silence before auto-close (default 60) */
   silenceTimeout?: number;
+}
+
+/** What to tell the caller when the microphone did not start: a DOMException from getUserMedia, or the
+ *  SDK's 'audio.microphone_unavailable' error wrapping one. */
+export function microphoneMessage(err: any): string {
+  const name = String(err?.original?.name ?? err?.name ?? '');
+  const detail = String(err?.detail ?? err?.message ?? '');
+  if (/NotAllowedError|SecurityError/.test(name + ' ' + detail)) {
+    return 'Microphone access is blocked. Allow it for this site in your browser settings, then try again.';
+  }
+  if (/NotFoundError|OverconstrainedError/.test(name + ' ' + detail)) {
+    return 'No microphone was found on this device.';
+  }
+  return 'The microphone could not start. Please try again.';
 }
 
 export class ConversationalPanel {
@@ -394,6 +414,8 @@ export class ConversationalPanel {
   private countdownEl!: HTMLElement;
   private noteEl!: HTMLElement;
   private countdownTicker: number | null = null;
+  private microphone: Promise<MediaStream> | null = null;
+  private micError: unknown = null;
 
   // Callbacks
   onTranscription?: (text: string) => void;
@@ -507,14 +529,25 @@ export class ConversationalPanel {
     return d.innerHTML;
   }
 
-  /** Start the conversation (called when user clicks "Start Conversation" or externally) */
-  async start() {
-    if (this.isRunning) return;
+  /**
+   * Start the conversation (called when user clicks "Start Conversation" or externally). Call it from
+   * inside the click or tap, before any await: it asks for the microphone there. Resolves true once the
+   * call is live, false when it could not start (the reason is shown, and passed to onError).
+   */
+  async start(): Promise<boolean> {
+    if (this.isRunning) return false;
     if (this._locked) {
       this.showError('This session has ended. Refresh the page to start a new one.');
-      return;
+      return false;
     }
     this.isRunning = true;
+    // First, while this is still the tap: iOS Safari only reliably shows its microphone prompt for a request
+    // made inside a user gesture, and refuses capture with no prompt at all while the page's audio session
+    // is in playback mode. Asked for later, after the connection opened, the call went live with the agent
+    // talking and the caller's microphone never captured (2026-09-28).
+    this.microphone = requestMicrophone();
+    this.micError = null;
+    this.microphone.catch((e) => { this.micError = e; });
     this.startBtn.disabled = true;
     this.errorEl.classList.remove('is-visible');
     this.playConnectingSound();
@@ -577,10 +610,13 @@ export class ConversationalPanel {
           this.onError?.(err);
           // The server's own words when it ended the session on purpose (e.g. "Demo time limit
           // reached..."); a generic line for anything else.
-          this.end(err?.code === 'session.ended' && err?.message
-            ? err.message
-            : 'Connection issue. Try again in a moment.');
-        }
+          this.end(err?.code === 'audio.microphone_unavailable'
+            ? microphoneMessage(err)
+            : err?.code === 'session.ended' && err?.message
+              ? err.message
+              : 'Connection issue. Try again in a moment.');
+        },
+        microphone: this.microphone,
       });
 
       this.agent = agentHandle;
@@ -591,6 +627,8 @@ export class ConversationalPanel {
       try { agentHandle.unlockAudioForMobile?.(); } catch (_) { /* ignore */ }
 
       const ok = await agentHandle.connect();
+      // Ended while connecting (the microphone was refused, the server closed): the reason is already shown.
+      if (!this.isRunning) return false;
       if (ok) {
         this.fadeOutConnectingSound();
         // Resize canvas to container
@@ -605,19 +643,22 @@ export class ConversationalPanel {
         this.startTimer();
         this.onStart?.();
         if ((window as any).lucide) (window as any).lucide.createIcons();
-      } else {
-        this.fadeOutConnectingSound();
-        this.playErrorTone();
-        this.curtain.classList.remove('is-up');
-        this.showError('Could not connect. Please try again.');
-        this.isRunning = false;
+        return true;
       }
+      this.fadeOutConnectingSound();
+      this.playErrorTone();
+      // The microphone's own failure when that is what stopped the call, not a generic connection line.
+      const micError = this.micError;
+      this.stop();
+      this.showError(micError ? microphoneMessage(micError) : 'Could not connect. Please try again.');
+      return false;
     } catch (err: any) {
       this.fadeOutConnectingSound();
       this.playErrorTone();
       console.error('ConversationalPanel start error:', err);
       this.stop();
       this.showError('Something went wrong. Please try again.');
+      return false;
     } finally {
       this.startBtn.disabled = false;
     }
@@ -633,6 +674,11 @@ export class ConversationalPanel {
       try { this.agent.disconnect(); } catch (_) {}
       this.agent = null;
     }
+    // Release the stream asked for at Start even if the agent never took it over (a ConvoAgent that
+    // ignores `microphone` asks again itself); stopping tracks the agent already stopped is harmless.
+    const mic = this.microphone;
+    this.microphone = null;
+    mic?.then((s) => s.getTracks().forEach((t) => t.stop()), () => {});
     if (this.timerTicker) { clearInterval(this.timerTicker); this.timerTicker = null; }
     this.stopCountdown();
     this.setNote('');

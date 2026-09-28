@@ -314,11 +314,29 @@ export class VoiceAgentClient {
           this.sendConfig();
 
           if (this.audioManager && !this.micStarted) {
-            await this.audioManager.startMicrophone((data) => {
-              if (this.isConnected) {
-                this.sendAudio(data);
-              }
-            });
+            try {
+              await this.audioManager.startMicrophone((data) => {
+                if (this.isConnected) {
+                  this.sendAudio(data);
+                }
+              });
+            } catch (e) {
+              // No microphone, no call. Uncaught here, this left connect() pending forever while the session
+              // it had opened went on talking: the caller heard the agent, nothing they said reached it, and
+              // the page never learned why (iOS refusing capture with no prompt, 2026-09-28).
+              const name = (e as { name?: string } | null)?.name || 'Error';
+              const error = new LokutorError('audio.microphone_unavailable',
+                name === 'NotAllowedError' || name === 'SecurityError'
+                  ? 'Microphone access was not allowed.'
+                  : 'The microphone could not be started.',
+                { detail: `${name}: ${(e as Error)?.message ?? e}`, original: e, retryable: false });
+              sdkTrace('mic.failed', { name });
+              settle(() => reject(error));
+              this.isUserDisconnect = true;
+              try { this.ws?.close(); } catch (_) { /* already closing */ }
+              this.emit('error', error); // reaches onError too
+              return;
+            }
             this.micStarted = true;
           }
 
@@ -600,8 +618,7 @@ export class VoiceAgentClient {
             detail: backendDetail,
             retryable: backendRetryable,
           });
-          if (this.onError) this.onError(error);
-          this.emit('error', error);
+          this.emit('error', error); // reaches onError too (calling it here as well delivered every server error twice)
           console.error(`❌ Server error: [${error.code}] ${error.message}`);
           break;
         }

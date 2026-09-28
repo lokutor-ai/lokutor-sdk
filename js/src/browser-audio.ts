@@ -16,7 +16,59 @@ export interface BrowserAudioConfig {
    * the call goes silent in both directions. Set false if your app manages this itself.
    */
   keepAwake?: boolean;
+  /**
+   * A microphone stream the page already asked for, ideally with requestMicrophone() inside the tap that
+   * started the call. startMicrophone uses it instead of calling getUserMedia again later, after the
+   * connection opens -- which iOS Safari can refuse without showing its prompt.
+   */
+  microphone?: MediaStream | Promise<MediaStream>;
   onInputError?: (error: Error) => void;
+}
+
+/**
+ * Ask for the microphone now, from inside the tap or click that starts a call, and return the pending stream.
+ *
+ * Call it synchronously in the gesture handler, before any await, and pass the result to BrowserAudioManager
+ * as `microphone` (ConversationalPanel does this itself). Two iOS Safari behaviours made a later request fail
+ * with no prompt at all -- the call connected, the agent spoke, and nothing the caller said was heard:
+ *  - a request outside a user gesture may be refused instead of prompting;
+ *  - while the page's audio session is in 'playback' mode (set by pages so audio plays through the mute
+ *    switch), capture is refused outright. It is put back to 'auto', under which Safari switches to
+ *    play-and-record itself when capture starts and keeps the loudspeaker.
+ */
+export function requestMicrophone(
+  constraints: Pick<BrowserAudioConfig, 'autoGainControl' | 'echoCancellation' | 'noiseSuppression'> = {}
+): Promise<MediaStream> {
+  if (typeof navigator === 'undefined') {
+    return Promise.reject(new Error('Microphone capture needs a browser'));
+  }
+  const session = (navigator as any).audioSession;
+  if (session && session.type !== 'auto' && session.type !== 'play-and-record') {
+    try { session.type = 'auto'; } catch (_) { /* read-only in this browser */ }
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return Promise.reject(new Error('Microphone capture is not available here (it needs HTTPS)'));
+  }
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      autoGainControl: constraints.autoGainControl ?? true,
+      echoCancellation: constraints.echoCancellation ?? true,
+      noiseSuppression: constraints.noiseSuppression ?? true,
+    },
+  });
+}
+
+/**
+ * Resume an AudioContext without waiting on it forever. Outside a user gesture iOS Safari leaves resume()'s
+ * promise pending, which stalled the whole call start; the context starts on its own once capture is live,
+ * and playback resumes it again anyway.
+ */
+async function resumeWithin(ctx: AudioContext, ms: number): Promise<void> {
+  if (ctx.state === 'running') return;
+  await Promise.race([
+    ctx.resume().catch(() => {}),
+    new Promise<void>((r) => setTimeout(r, ms)),
+  ]);
 }
 
 /**
@@ -55,6 +107,7 @@ export class BrowserAudioManager {
   private echoCancellation: boolean;
   private noiseSuppression: boolean;
   private keepAwake: boolean;
+  private providedMicrophone: MediaStream | Promise<MediaStream> | null;
 
   // Screen wake lock, held while the microphone is live. Browsers release it whenever the page is
   // hidden, so it is taken again when the page becomes visible.
@@ -76,6 +129,9 @@ export class BrowserAudioManager {
     this.echoCancellation = config.echoCancellation ?? true;
     this.noiseSuppression = config.noiseSuppression ?? true;
     this.keepAwake = config.keepAwake ?? true;
+    this.providedMicrophone = config.microphone ?? null;
+    // Never an unhandled rejection: startMicrophone reports it.
+    if (this.providedMicrophone instanceof Promise) this.providedMicrophone.catch(() => {});
     this.onInputError = config.onInputError;
   }
 
@@ -98,9 +154,8 @@ export class BrowserAudioManager {
       throw new Error('Failed to initialize AudioContext');
     }
 
-    if (this.audioContext.state === 'suspended') {
-      await this.audioContext.resume();
-      console.log('👂 AudioContext resumed');
+    if (this.audioContext.state !== 'running') {
+      await resumeWithin(this.audioContext, 500);
     }
 
     // Setup analyser for visualization if enabled
@@ -132,14 +187,20 @@ export class BrowserAudioManager {
       this.onAudioInput = onAudioInput;
       this.isListening = true;
 
-      // Request microphone access with constraints
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          autoGainControl: this.autoGainControl,
-          echoCancellation: this.echoCancellation,
-          noiseSuppression: this.noiseSuppression,
-        },
-      });
+      // The page's own request (made inside the tap), when it has one and its track is still live;
+      // otherwise ask now.
+      const provided = this.providedMicrophone;
+      this.providedMicrophone = null;
+      const stream = provided ? await provided : null;
+      this.mediaStream = stream && stream.getAudioTracks().some((t) => t.readyState === 'live')
+        ? stream
+        : await navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: this.autoGainControl,
+            echoCancellation: this.echoCancellation,
+            noiseSuppression: this.noiseSuppression,
+          },
+        });
 
       // Create source from microphone stream
       this.mediaStreamAudioSourceNode =
@@ -190,6 +251,7 @@ export class BrowserAudioManager {
       console.log('🎤 Microphone started');
       this.holdScreenAwake();
     } catch (error) {
+      this.isListening = false;
       const err = error instanceof Error ? error : new Error(String(error));
       if (this.onInputError) this.onInputError(err);
       throw err;
@@ -478,8 +540,15 @@ export class BrowserAudioManager {
       this.analyserNode = null;
     }
 
-    // Don't close AudioContext - it can be expensive to recreate
-    // Just leave it suspended if no longer needed
+    // Closed, not left open: a page makes a new manager per call, so every open context was one more
+    // left running for the life of the page (iOS Safari showed five at the start of a second call, which
+    // then hung). init() makes a fresh one if this manager is used again.
+    if (this.audioContext) {
+      const ctx = this.audioContext;
+      this.audioContext = null;
+      this.nextPlaybackTime = 0;
+      ctx.close().catch(() => {});
+    }
   }
 
   /**

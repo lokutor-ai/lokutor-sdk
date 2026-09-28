@@ -14,7 +14,7 @@ export {
 } from './client';
 export { BrowserAudioManager } from './browser-audio';
 export { NodeAudioManager } from './node-audio';
-export { ConversationalPanel } from './conversational-panel';
+export { ConversationalPanel, microphoneMessage } from './conversational-panel';
 export type { ConversationalPanelConfig } from './conversational-panel';
 export {
   pcm16ToFloat32,
