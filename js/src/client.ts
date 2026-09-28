@@ -91,6 +91,24 @@ export interface AudioManager {
   getAmplitude(): number;
 }
 
+/**
+ * Close codes after which the client reconnects: the connection dropped or the server went away
+ * (a deploy, a restart, a network change), so another attempt can succeed. Every other close is
+ * the server ending the session on purpose -- 1000 when the agent ends the call, 1008 when a limit
+ * is reached (the landing demo's time allowance), 4xxx for application reasons -- and reconnecting
+ * after one of those used to open a fresh session behind the caller's back: a new conversation
+ * with no memory of the old one, a second microphone pipeline, and every reply discarded as stale.
+ */
+const RECONNECTABLE_CLOSE_CODES = new Set([1001, 1006, 1011, 1012, 1013, 1014]);
+
+/** What the server announced about how long this session may run (landing-page demo sessions). */
+export interface SessionLimit {
+  /** Seconds the session may still run, from when the message arrived. */
+  seconds: number;
+  /** Why there is a limit, e.g. "demo". */
+  reason?: string;
+}
+
 // Browser-compatible base64 to Uint8Array
 function base64ToUint8Array(base64: string): Uint8Array {
   const binaryString = atob(base64);
@@ -189,6 +207,9 @@ export class VoiceAgentClient {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // The microphone is started once per session of this client, not once per socket: a reconnect
+  // reuses it. Starting it again on every open ran two capture pipelines into one resampler.
+  private micStarted: boolean = false;
 
   // Runtime state
   private serverPlaybackRate: number = 44100;
@@ -284,16 +305,21 @@ export class VoiceAgentClient {
           this.isConnected = true;
           this.reconnectAttempts = 0;
           this.reconnecting = false;
+          // Every socket is a new server session, and a new session numbers its replies from 1.
+          // Keeping the previous session's count here discarded every reply after a reconnect as
+          // "ghost audio" -- the agent answered and the caller heard nothing.
+          this.currentGeneration = 0;
           console.log('✅ Connected to voice agent!');
           sdkTrace('ws.open');
           this.sendConfig();
 
-          if (this.audioManager) {
+          if (this.audioManager && !this.micStarted) {
             await this.audioManager.startMicrophone((data) => {
               if (this.isConnected) {
                 this.sendAudio(data);
               }
             });
+            this.micStarted = true;
           }
 
           settle(() => resolve(true));
@@ -351,6 +377,19 @@ export class VoiceAgentClient {
           }
 
           console.log(`🔌 WebSocket closed — code: ${event.code}, reason: "${event.reason || 'none'}", clean: ${event.wasClean}`);
+
+          if (!this.isUserDisconnect && !RECONNECTABLE_CLOSE_CODES.has(event.code)) {
+            // The server ended the session on purpose. Say so, with its reason, and stay closed.
+            const ended = new LokutorError('session.ended', event.reason || 'The session was ended by the server.', {
+              detail: `close code ${event.code}`,
+              retryable: false,
+            });
+            console.log(`Session ended by the server (code ${event.code})`);
+            this.emit('ended', { code: event.code, reason: event.reason || '' });
+            if (this.onError) this.onError(ended);
+            if (this.onStatus) this.onStatus('disconnected');
+            return;
+          }
 
           if (!this.isUserDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnecting = true;
@@ -566,6 +605,17 @@ export class VoiceAgentClient {
           console.error(`❌ Server error: [${error.code}] ${error.message}`);
           break;
         }
+        case 'session_limit': {
+          // How long this session may run, sent by the server when there is a limit (the landing
+          // page's key-less demo). A UI can show it as a countdown instead of the call just ending.
+          const seconds = Number(msg.data?.seconds ?? msg.seconds);
+          if (Number.isFinite(seconds) && seconds >= 0) {
+            const limit: SessionLimit = { seconds, reason: msg.data?.reason ?? msg.reason };
+            this.emit('session_limit', limit);
+          }
+          break;
+        }
+
         case 'tool_call':
           this.emit('tool_call', { name: msg.name, arguments: msg.arguments });
           console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
@@ -648,6 +698,7 @@ export class VoiceAgentClient {
     if (this.audioManager) {
       this.audioManager.cleanup();
     }
+    this.micStarted = false;
     this.isConnected = false;
     this.configConfirmed = false;
     this.reconnecting = false;

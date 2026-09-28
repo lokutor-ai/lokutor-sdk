@@ -10,6 +10,12 @@ export interface BrowserAudioConfig {
   autoGainControl?: boolean;
   echoCancellation?: boolean;
   noiseSuppression?: boolean;
+  /**
+   * Keep the screen awake while the microphone is live (Screen Wake Lock API), as a video player does.
+   * Default true: a phone that dims and locks mid-call suspends the page's microphone and audio, and
+   * the call goes silent in both directions. Set false if your app manages this itself.
+   */
+  keepAwake?: boolean;
   onInputError?: (error: Error) => void;
 }
 
@@ -48,6 +54,12 @@ export class BrowserAudioManager {
   private autoGainControl: boolean;
   private echoCancellation: boolean;
   private noiseSuppression: boolean;
+  private keepAwake: boolean;
+
+  // Screen wake lock, held while the microphone is live. Browsers release it whenever the page is
+  // hidden, so it is taken again when the page becomes visible.
+  private wakeLock: { release(): Promise<void> } | null = null;
+  private visibilityHandler: (() => void) | null = null;
 
   // Callbacks
   private onAudioInput?: (pcm16Data: Uint8Array) => void;
@@ -63,6 +75,7 @@ export class BrowserAudioManager {
     this.autoGainControl = config.autoGainControl ?? true;
     this.echoCancellation = config.echoCancellation ?? true;
     this.noiseSuppression = config.noiseSuppression ?? true;
+    this.keepAwake = config.keepAwake ?? true;
     this.onInputError = config.onInputError;
   }
 
@@ -105,6 +118,14 @@ export class BrowserAudioManager {
   ): Promise<void> {
     if (!this.audioContext) {
       await this.init();
+    }
+
+    // Already capturing: take the new callback and keep the one pipeline. A second getUserMedia +
+    // ScriptProcessor here used to run two captures into the same resampler, doubling and scrambling
+    // what the server heard.
+    if (this.isListening && this.mediaStream) {
+      this.onAudioInput = onAudioInput;
+      return;
     }
 
     try {
@@ -167,6 +188,7 @@ export class BrowserAudioManager {
       };
 
       console.log('🎤 Microphone started');
+      this.holdScreenAwake();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       if (this.onInputError) this.onInputError(err);
@@ -226,6 +248,7 @@ export class BrowserAudioManager {
    */
   stopMicrophone(): void {
     this.isListening = false;
+    this.releaseScreenAwake();
 
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
@@ -243,6 +266,50 @@ export class BrowserAudioManager {
     }
 
     console.log('🎤 Microphone stopped');
+  }
+
+  /**
+   * Keep the screen on while the microphone is live, and bring audio back when the page returns
+   * to the foreground (iOS leaves the context "interrupted" after the screen locks).
+   */
+  private holdScreenAwake(): void {
+    if (typeof document === 'undefined') return;
+    if (!this.visibilityHandler) {
+      this.visibilityHandler = () => {
+        if (document.visibilityState !== 'visible' || !this.isListening) return;
+        if (this.audioContext && this.audioContext.state !== 'running') {
+          this.audioContext.resume().catch(() => {});
+        }
+        void this.requestWakeLock();
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
+    void this.requestWakeLock();
+  }
+
+  private async requestWakeLock(): Promise<void> {
+    if (!this.keepAwake || this.wakeLock || typeof navigator === 'undefined') return;
+    const api = (navigator as any).wakeLock;
+    if (!api?.request || document.visibilityState !== 'visible') return;
+    try {
+      const lock = await api.request('screen');
+      if (!this.isListening) { await lock.release().catch(() => {}); return; }
+      this.wakeLock = lock;
+      // The browser drops the lock when the page is hidden; forget it so it is taken again on return.
+      lock.addEventListener?.('release', () => { if (this.wakeLock === lock) this.wakeLock = null; });
+    } catch (_) {
+      // Not allowed right now (battery saver, permissions policy): the call works, the screen may dim.
+    }
+  }
+
+  private releaseScreenAwake(): void {
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    const lock = this.wakeLock;
+    this.wakeLock = null;
+    lock?.release().catch(() => {});
   }
 
   /**

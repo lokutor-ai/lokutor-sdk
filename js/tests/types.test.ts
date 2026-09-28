@@ -19,9 +19,9 @@ describe('SDK Types and Enums', () => {
       expect(VoiceStyle.M5).toBe('M5');
     });
 
-    it('should have 10 voices total', () => {
+    it('should have 30 voice ids: 10 English, 10 Spanish/Catalan, 10 deprecated Versa 1.x names', () => {
       const voices = Object.values(VoiceStyle);
-      expect(voices).toHaveLength(10);
+      expect(voices).toHaveLength(30);
     });
   });
 
@@ -42,15 +42,18 @@ describe('SDK Types and Enums', () => {
       expect(Language.PORTUGUESE).toBe('pt');
     });
 
-    it('should support Korean', () => {
-      expect(Language.KOREAN).toBe('ko');
+    it('should support the Spanish regional languages', () => {
+      expect(Language.CATALAN).toBe('ca');
+      expect(Language.GALICIAN).toBe('gl');
+      expect(Language.BASQUE).toBe('eu');
     });
 
     it('should have all supported languages', () => {
       // Update this count when Language gains/loses a member, alongside the
-      // backend's own language list (pkg/orchestrator's Language type).
+      // backend's own language list (pkg/orchestrator's Language type). Nine
+      // since the Versa 2.0 release: the languages the voice model serves.
       const languages = Object.values(Language);
-      expect(languages).toHaveLength(32);
+      expect(languages).toHaveLength(9);
     });
   });
 

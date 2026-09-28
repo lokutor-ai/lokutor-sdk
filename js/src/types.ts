@@ -338,6 +338,7 @@ export type ErrorCode =
   | 'stt.language_not_supported'
   | 'agent.session_failed'
   | 'agent.provider_error'
+  | 'session.ended'
   | 'internal.error'
   | 'internal.timeout'
   | 'internal.cancelled'
@@ -369,6 +370,7 @@ function isRetryableCode(code: ErrorCode): boolean {
     'auth.missing_key',
     'auth.invalid_key',
     'auth.time_limited',
+    'session.ended',
     'validation.invalid_voice',
     'validation.invalid_language',
     'validation.text_too_long',

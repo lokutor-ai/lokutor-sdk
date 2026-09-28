@@ -102,6 +102,22 @@ const PANEL_CSS = /*css*/ `
     margin-bottom: auto;
     padding-top: 1.5rem;
   }
+  .cv-countdown, .cv-note {
+    display: none;
+    margin-top: 0.4rem;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--cv-ui-border, rgba(255,255,255,0.1));
+    background: var(--cv-ui-bg, rgba(255,255,255,0.05));
+    color: var(--cv-text-dim, rgba(255,255,255,0.6));
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .cv-countdown.is-visible, .cv-note.is-visible { display: block; }
+  .cv-countdown.is-low { color: var(--cv-accent); border-color: var(--cv-accent); }
   .cv-title {
     font-size: clamp(1rem, 2.5vw, 1.75rem);
     font-weight: 700;
@@ -375,6 +391,9 @@ export class ConversationalPanel {
   private muteSvg!: SVGElement;
   private stopBtn!: HTMLElement;
   private visualizerWrap!: HTMLElement;
+  private countdownEl!: HTMLElement;
+  private noteEl!: HTMLElement;
+  private countdownTicker: number | null = null;
 
   // Callbacks
   onTranscription?: (text: string) => void;
@@ -383,6 +402,12 @@ export class ConversationalPanel {
   onStop?: () => void;
   onError?: (err: any) => void;
   onToolCall?: (tool: any) => void;
+  /**
+   * The call ended without the visitor pressing End: a time limit, the silence timeout, the server
+   * closing the session, or the connection being lost. Receives the message the panel shows, so a
+   * page that renders its own chrome (and hides this panel's curtain) can show it too.
+   */
+  onEnded?: (message: string) => void;
 
   constructor(cfg: ConversationalPanelConfig) {
     this.cfg = cfg;
@@ -427,6 +452,8 @@ export class ConversationalPanel {
       </div>
       <div class="cv-header">
         <h2 class="cv-title">${this.esc(this.cfg.title || "Voice Chat")}</h2>
+        <div class="cv-countdown" aria-live="off"></div>
+        <div class="cv-note" role="status"></div>
       </div>
       <div class="cv-visualizer-wrap">
         <canvas class="cv-canvas"></canvas>
@@ -465,6 +492,8 @@ export class ConversationalPanel {
     this.muteSvg = this.muteBtn.querySelector('svg')!;
     this.stopBtn = this.el.querySelector('.cv-btn--end')!;
     this.visualizerWrap = this.el.querySelector('.cv-visualizer-wrap')!;
+    this.countdownEl = this.el.querySelector('.cv-countdown')!;
+    this.noteEl = this.el.querySelector('.cv-note')!;
 
     // Events
     this.startBtn.addEventListener('click', () => this.start());
@@ -523,7 +552,15 @@ export class ConversationalPanel {
           this.el.classList.remove('cv-is-speaking', 'cv-is-thinking');
           if (status === 'speaking') this.el.classList.add('cv-is-speaking');
           else if (status === 'thinking') this.el.classList.add('cv-is-thinking');
+          // A dropped connection is retried by the client; say so instead of looking live.
+          this.setNote(status === 'reconnecting' ? 'Reconnecting…' : '');
+          // The client gave up, or the server ended the session: the call is over. Never leave a
+          // panel that looks live while nothing can answer.
+          if (status === 'disconnected' && this.isRunning) {
+            this.end('The call has ended.');
+          }
         },
+        onSessionLimit: (seconds: number) => this.startCountdown(seconds),
         onTranscription: (text: string) => {
           this._lastSpeechTime = Date.now();
           this.onTranscription?.(text);
@@ -538,8 +575,11 @@ export class ConversationalPanel {
         onError: (err: any) => {
           if (!this.isRunning) return;
           this.onError?.(err);
-          this.stop();
-          this.showError('Connection issue. Try again in a moment.');
+          // The server's own words when it ended the session on purpose (e.g. "Demo time limit
+          // reached..."); a generic line for anything else.
+          this.end(err?.code === 'session.ended' && err?.message
+            ? err.message
+            : 'Connection issue. Try again in a moment.');
         }
       });
 
@@ -594,6 +634,8 @@ export class ConversationalPanel {
       this.agent = null;
     }
     if (this.timerTicker) { clearInterval(this.timerTicker); this.timerTicker = null; }
+    this.stopCountdown();
+    this.setNote('');
     if (this.visualizer) { this.visualizer.stop(); this.visualizer = null; }
     this.curtain.classList.remove('is-up');
     this.el.classList.remove('cv-is-speaking', 'cv-is-thinking');
@@ -683,6 +725,39 @@ export class ConversationalPanel {
     }, 5000);
   }
 
+  /** End the call for a reason other than the End button, and say why. */
+  private end(message: string) {
+    this.stop();
+    this.showError(message);
+    this.onEnded?.(message);
+  }
+
+  /** Show how long the session may still run, as announced by the server. */
+  private startCountdown(seconds: number) {
+    this.stopCountdown();
+    const endsAt = Date.now() + seconds * 1000;
+    const render = () => {
+      const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+      this.countdownEl.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`;
+      this.countdownEl.classList.toggle('is-low', left <= 30);
+      if (left === 0) this.stopCountdown(false);
+    };
+    this.countdownEl.classList.add('is-visible');
+    render();
+    this.countdownTicker = window.setInterval(render, 1000);
+  }
+
+  private stopCountdown(hide = true) {
+    if (this.countdownTicker) { clearInterval(this.countdownTicker); this.countdownTicker = null; }
+    if (hide) this.countdownEl?.classList.remove('is-visible', 'is-low');
+  }
+
+  private setNote(text: string) {
+    if (!this.noteEl) return;
+    this.noteEl.textContent = text;
+    this.noteEl.classList.toggle('is-visible', Boolean(text));
+  }
+
   /** Destroy the component, removing all DOM and stopping any active session */
   destroy() {
     this.stop();
@@ -703,15 +778,13 @@ export class ConversationalPanel {
 
       if (elapsed >= maxDur) {
         this._locked = true;
-        this.stop();
-        this.showError('Tiempo límite alcanzado.');
+        this.end('Time limit reached.');
         return;
       }
 
       if (Date.now() - this._lastSpeechTime > silentMax * 1000) {
         this._locked = true;
-        this.stop();
-        this.showError('Sesión finalizada por inactividad.');
+        this.end('The call ended after a long silence.');
       }
     }, 1000);
   }
