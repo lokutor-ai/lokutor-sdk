@@ -25,7 +25,7 @@ class TestVoiceAgentClient(unittest.TestCase):
         self.assertEqual(client.prompt, "Test prompt")
         self.assertEqual(client.voice, VoiceStyle.F1)
         self.assertEqual(client.language, Language.ENGLISH)
-        self.assertFalse(client.connected)
+        self.assertFalse(client.connected.is_set())
 
     def test_voice_styles(self):
         """Test all voice styles are available"""
@@ -75,7 +75,7 @@ class TestVoiceAgentClient(unittest.TestCase):
         
         client.disconnect()
         
-        self.assertTrue(client.stop_conversation)
+        self.assertFalse(client.running)
         client.ws.close.assert_called_once()
 
 
@@ -114,3 +114,47 @@ class TestLanguages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProtocolFixes(unittest.TestCase):
+    """Wire behaviour fixed in 1.5.0, against what the server (lokutor_tts pkg/api) sends."""
+
+    def _client(self, **kw):
+        return VoiceAgentClient(api_key="k", prompt="p", **kw)
+
+    def test_tool_call_handler_receives_call_id(self):
+        got = []
+        client = self._client(on_tool_call=lambda name, args, call_id: got.append((name, args, call_id)))
+        client._on_message(MagicMock(), json.dumps({"type": "tool_call", "name": "book", "arguments": "{}", "call_id": "c1"}))
+        self.assertEqual(got, [("book", "{}", "c1")])
+
+    def test_two_argument_tool_handler_still_works(self):
+        got = []
+        client = self._client(on_tool_call=lambda name, args: got.append((name, args)))
+        client._on_message(MagicMock(), json.dumps({"type": "tool_call", "name": "book", "arguments": "{}", "call_id": "c1"}))
+        self.assertEqual(got, [("book", "{}")])
+
+    def test_rates_sent_once_in_config_not_in_reply(self):
+        client = self._client()
+        ws = MagicMock()
+        client._on_open(ws)
+        sent = [json.loads(c.args[0])["type"] for c in ws.send.call_args_list]
+        self.assertEqual(sent[-1], "rates")
+        ws.reset_mock()
+        client._on_message(ws, json.dumps({"type": "server_rates", "playback": 44100, "input": 16000}))
+        ws.send.assert_not_called()
+
+    def test_plain_string_voice_is_accepted(self):
+        client = self._client(voice="clone_abc")
+        ws = MagicMock()
+        client._on_open(ws)
+        first = json.loads(ws.send.call_args_list[0].args[0])
+        self.assertEqual(first, {"type": "voice", "data": "clone_abc"})
+
+    def test_clients_construct_without_pyaudio(self):
+        import lokutor.client as c
+        with patch.object(c, "pyaudio", None):
+            from lokutor import TTSClient
+            TTSClient(api_key="k")  # used to raise: the audio device was opened in the constructor
+            client = self._client()
+            client.disconnect()  # stopping audio that never started must not need pyaudio either

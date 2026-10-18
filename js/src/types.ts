@@ -118,7 +118,14 @@ export const DEFAULT_URLS = {
  * SDK Configuration interface
  */
 export interface LokutorConfig {
-  apiKey: string;
+  /** An API key, or a short-lived wst_ ticket from POST /ws-ticket. Optional when `auth` is given. */
+  apiKey?: string;
+  /**
+   * Called before every connect (and reconnect) for the credential to use. In a browser, have it ask
+   * your backend for a fresh ticket (POST https://api.lokutor.com/ws-ticket with your API key) so the
+   * key itself never reaches the page; a ticket lasts 10 minutes, so reconnects need a new one.
+   */
+  auth?: () => string | Promise<string>;
   agentId?: string;
   onTranscription?: (text: string) => void;
   onResponse?: (text: string) => void;
@@ -313,6 +320,8 @@ export interface ToolDefinition {
 export interface ToolCall {
   name: string;
   arguments: string;
+  /** Pass to submitToolResult(call_id, result). */
+  call_id: string;
 }
 
 /**
@@ -338,6 +347,11 @@ export type ErrorCode =
   | 'stt.language_not_supported'
   | 'agent.session_failed'
   | 'agent.provider_error'
+  | 'agent.not_found'
+  | 'billing.insufficient_balance'
+  | 'billing.topup_required'
+  | 'billing.limit_reached'
+  | 'billing.account_disputed'
   | 'session.ended'
   | 'audio.microphone_unavailable'
   | 'internal.error'
@@ -380,6 +394,11 @@ function isRetryableCode(code: ErrorCode): boolean {
     'validation.steps_out_of_range',
     'validation.invalid_request_format',
     'internal.cancelled',
+    'agent.not_found',
+    'billing.insufficient_balance',
+    'billing.topup_required',
+    'billing.limit_reached',
+    'billing.account_disputed',
   ];
   return !fatal.includes(code);
 }

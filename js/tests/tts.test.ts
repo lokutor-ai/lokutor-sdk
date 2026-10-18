@@ -278,7 +278,7 @@ describe('TTSClient', () => {
       await expect(synthesisPromise).resolves.toBeUndefined();
     });
 
-    it('should timeout on inactivity', async () => {
+    it('rejects when no audio arrives within 30 s', async () => {
       vi.useFakeTimers();
 
       const client = new TTSClient({ apiKey: 'test-key' });
@@ -286,11 +286,10 @@ describe('TTSClient', () => {
       const synthesisPromise = client.synthesize({
         text: 'Hello',
       });
+      const outcome = expect(synthesisPromise).rejects.toMatchObject({ code: 'internal.timeout' });
 
-      vi.runAllTimers();
-      vi.advanceTimersByTime(2100);
-
-      await synthesisPromise;
+      await vi.advanceTimersByTimeAsync(31000);
+      await outcome;
 
       vi.useRealTimers();
     });

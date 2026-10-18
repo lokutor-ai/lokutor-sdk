@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-10-18
+
+Protocol fixes, each checked against what the server sends (lokutor_tts pkg/api):
+
+- `tool_call` fires once, with `call_id` (now on the `ToolCall` type). It fired twice, the first time
+  without `call_id`, so a handler ran every tool twice and its first `submitToolResult` was dropped.
+- Callbacks fire once. `onTranscription`, `onResponse` and `onStatus` were called directly and again
+  through `emit`, so each fired twice; connection errors and `reconnecting`/`disconnected` now also reach
+  `on('error')`/`on('status')` listeners.
+- Partial user transcripts (`partial: true`) go to the new `transcription_partial` event and stay out of
+  `getTranscript()`; only final lines are reported as transcriptions.
+- With `agentId`, `voice`, `language` and `prompt` are sent only when set explicitly (`prompt` is optional
+  then). Defaults used to overwrite the dashboard agent's voice, language and prompt, including its
+  knowledge base and evaluation rules.
+- New `auth` option: a callback that returns the credential before every connect and reconnect, so a
+  browser can use short-lived tickets from `POST /ws-ticket` instead of embedding an API key.
+- `api_key` and `agent_id` are URL-encoded.
+- `TTSClient.synthesize` waits for the server's end of stream and rejects with a `LokutorError` on a server
+  error frame or a stall (30 s before the first audio, 15 s between chunks). It resolved after 2 s without
+  audio, so errors looked like success and requests queued for more than 2 s came back empty. `speed` and
+  `steps` are sent only when set (it sent 1.05 and 24).
+- Discovery helpers (`fetchVoices`, `fetchLanguages`, `fetchModels`, `fetchConfig`, `fetchStatus`) call the
+  API root (`/voices`, not `/ws/agent/voices`, which is a 404); `fetchHealth` calls `/ready` (`/health` is
+  the operator dashboard's).
+- `SpeechToTextClient.connect` rejects when the microphone cannot start instead of hanging, and STT error
+  frames keep the server's code.
+- `ErrorCode` includes `agent.not_found` and the `billing.*` codes the server sends.
+
 ## [1.5.1] - 2026-09-28
 
 - The microphone is asked for inside the tap that starts a call. `ConversationalPanel.start()` calls the new

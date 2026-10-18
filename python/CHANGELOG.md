@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-18
+
+- `on_tool_call(name, args, call_id)`: the call id is passed, so `submit_tool_result(call_id, ...)` can be
+  used. Two-argument handlers keep working.
+- `rates` is sent once, last in the configuration. It was sent in reply to every `server_rates`, which the
+  server answers with another `server_rates`, so the two answered each other for the whole session.
+- Imports on Python 3.8 and 3.9 (a `str | dict` annotation raised `TypeError` at import).
+- The audio device opens only when audio is played or recorded: `TTSClient`, `STTClient` and
+  `VoiceAgentClient` construct without pyaudio, and `disconnect()` needs none.
+- A plain string is accepted for `voice` and `language` (for example a `clone_...` voice id); `.value` was
+  read unconditionally and crashed the configuration.
+- Version numbers agree (setup.py said 1.2.3, the README 1.0.0).
+
 ## [1.0.0] - 2026-01-15
 
 ### Added

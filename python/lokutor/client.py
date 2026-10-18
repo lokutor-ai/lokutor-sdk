@@ -2,6 +2,8 @@
 Main client for Lokutor Voice Agent SDK
 """
 
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -26,6 +28,55 @@ try:
     import pyaudio
 except ImportError:
     pyaudio = None
+
+import inspect
+
+
+def _val(x):
+    """An enum's value, or the string itself (voices such as clone_... are plain strings)."""
+    return getattr(x, "value", x)
+
+
+def _call_flexible(cb, *args):
+    """Call cb with as many positional args as it accepts (tool_call gained call_id in 1.5.0)."""
+    try:
+        params = inspect.signature(cb).parameters.values()
+        if not any(p.kind == p.VAR_POSITIONAL for p in params):
+            n = sum(1 for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD))
+            args = args[:n]
+    except (TypeError, ValueError):
+        pass
+    return cb(*args)
+
+
+class _LazyAudioIO:
+    """Opens the local audio device only when audio is actually played or recorded, so clients used
+    without a speaker or microphone (synthesize to bytes, transcribe a file, play=False) work without
+    pyaudio. Stopping audio that was never started is a no-op."""
+
+    def __init__(self):
+        self._io = None
+
+    def _get(self):
+        if self._io is None:
+            self._io = _AudioIO()
+        return self._io
+
+    def stop(self):
+        if self._io is not None:
+            self._io.stop()
+
+    def clear_output(self):
+        if self._io is not None:
+            self._io.clear_output()
+
+    def wait_until_finished(self):
+        if self._io is not None:
+            self._io.wait_until_finished()
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
 
 from .config import (
     VoiceStyle,
@@ -186,7 +237,7 @@ class VoiceAgentClient:
         self.connected = Event()
         self.config_done = Event()
         self.running = False
-        self.audio = _AudioIO()
+        self.audio = _LazyAudioIO()
         self.tools = tools or []
         self.current_generation = 0
 
@@ -205,14 +256,14 @@ class VoiceAgentClient:
             cb = getattr(self, legacy_attr)
             if cb:
                 try:
-                    cb(*args, **kwargs)
+                    _call_flexible(cb, *args) if not kwargs else cb(*args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error in legacy callback {legacy_attr}: {e}")
 
         if event in self._listeners:
             for cb in self._listeners[event]:
                 try:
-                    cb(*args, **kwargs)
+                    _call_flexible(cb, *args) if not kwargs else cb(*args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error in listener for {event}: {e}")
 
@@ -348,14 +399,16 @@ class VoiceAgentClient:
         logger.info("WebSocket opened (sending config...)")
 
         try:
-            ws.send(json.dumps({"type": "voice", "data": self.voice.value}))
-            ws.send(json.dumps({"type": "language", "data": self.language.value}))
+            ws.send(json.dumps({"type": "voice", "data": _val(self.voice)}))
+            ws.send(json.dumps({"type": "language", "data": _val(self.language)}))
             if self.tools:
                 ws.send(json.dumps({"type": "tools", "data": self.tools}))
             ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
             ws.send(json.dumps({"type": "prompt", "data": self.prompt}))
+            # Last: the server releases the first turn on "rates", once the whole config has arrived.
+            ws.send(json.dumps({"type": "rates", "playback": 44100, "input": 16000}))
 
-            logger.info(f"Configured: voice={self.voice.value}, language={self.language.value}, "
+            logger.info(f"Configured: voice={_val(self.voice)}, language={_val(self.language)}, "
                         f"visemes={self.want_visemes}, tools={len(self.tools)}")
 
         except Exception as e:
@@ -431,14 +484,7 @@ class VoiceAgentClient:
                         pass
 
                 elif msg_type == "server_rates":
-                    playback = msg.get("playback", 44100)
-                    inp = msg.get("input", 16000)
-                    ws.send(json.dumps({
-                        "type": "rates",
-                        "playback": playback,
-                        "input": inp,
-                    }))
-                    logger.debug(f"Configured AEC rates: playback={playback}, input={inp}")
+                    logger.debug(f"Server rates: playback={msg.get('playback')}, input={msg.get('input')}")
 
                 elif msg_type == "visemes":
                     viseme_data = msg.get("data", [])
@@ -450,9 +496,10 @@ class VoiceAgentClient:
                     logger.debug(f"Received {len(vis_objs)} visemes")
 
                 elif msg_type == "tool_call":
+                    # call_id is what submit_tool_result(call_id, result) needs; it was never passed.
                     name = msg.get("name")
                     args = msg.get("arguments")
-                    self._emit("tool_call", name, args)
+                    self._emit("tool_call", name, args, msg.get("call_id"))
                     logger.info(f"Tool Call: {name}({args})")
 
                 elif msg_type == "error":
@@ -486,7 +533,7 @@ class TTSClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.server_url = DEFAULT_TTS_URL
-        self.audio = _AudioIO()
+        self.audio = _LazyAudioIO()
 
     def synthesize(
         self,
@@ -508,8 +555,8 @@ class TTSClient:
         def on_open(ws):
             req = {
                 "text": text,
-                "voice": voice.value,
-                "language": language.value,
+                "voice": _val(voice),
+                "language": _val(language),
                 "speed": speed,
                 "steps": steps,
                 "visemes": visemes,
@@ -613,7 +660,7 @@ class STTClient:
         if sample_rate is not None:
             body["sample_rate"] = sample_rate
         if language is not None:
-            body["language"] = language.value
+            body["language"] = _val(language)
 
         req = urllib.request.Request(
             self.transcribe_url,
@@ -658,7 +705,7 @@ class SpeechToTextClient:
         self.on_final_transcript = on_final_transcript
         self.on_error = on_error
 
-        self.audio = _AudioIO()
+        self.audio = _LazyAudioIO()
         self.ws: Optional[websocket.WebSocketApp] = None
         self.running = False
         self._mic_thread: Optional[Thread] = None
@@ -668,7 +715,7 @@ class SpeechToTextClient:
         self.running = True
 
         def on_open(ws):
-            ws.send(json.dumps({"language": self.language.value, "vad": self.vad}))
+            ws.send(json.dumps({"language": _val(self.language), "vad": self.vad}))
             self.audio.start_input()
             self._mic_thread = Thread(target=self._mic_loop, daemon=True)
             self._mic_thread.start()

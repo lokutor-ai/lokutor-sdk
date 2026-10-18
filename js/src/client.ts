@@ -50,6 +50,12 @@ function wsToHttp(url: string): string {
   return url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 }
 
+// The discovery routes live at the API's root (https://api.lokutor.com/voices). They were built from the
+// agent socket's URL, so every helper requested /ws/agent/voices and got a 404.
+function apiOrigin(base?: string): string {
+  return new URL(wsToHttp(base || DEFAULT_URLS.VOICE_AGENT)).origin;
+}
+
 async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -216,9 +222,13 @@ export class VoiceAgentClient {
   private serverInputRate: number = 16000;
 
   private serverUrl: string;
+  private authProvider?: () => string | Promise<string>;
+  private voiceExplicit = false;
+  private languageExplicit = false;
 
   constructor(config: LokutorConfig & {
-    prompt: string,
+    /** Required unless agentId is set (a dashboard agent brings its own prompt). */
+    prompt?: string,
     voice?: VoiceId,
     language?: Language,
     visemes?: boolean,
@@ -227,9 +237,15 @@ export class VoiceAgentClient {
     tools?: ToolDefinition[],
     serverUrl?: string,
   }) {
-    this.apiKey = config.apiKey;
+    this.apiKey = config.apiKey || "";
+    this.authProvider = config.auth;
     this.agentId = config.agentId || "";
-    this.prompt = config.prompt;
+    this.prompt = config.prompt ?? "";
+    // With agentId, only what the caller set explicitly is sent: the server applies voice, language and
+    // prompt on top of the agent it loaded, and a default prompt replaced the agent's own (with its
+    // knowledge base and evaluation rules), F1/en replaced its voice and language.
+    this.voiceExplicit = config.voice !== undefined;
+    this.languageExplicit = config.language !== undefined;
     // Default stays the Versa 1.x name on purpose: the server resolves F1 to the voice of the
     // call's own language family (esca_f1 for Spanish, en_f1 for English), which adapts better
     // than pinning one explicit voice here would.
@@ -254,6 +270,15 @@ export class VoiceAgentClient {
    */
   public async connect(customAudioManager?: AudioManager): Promise<boolean> {
     this.isUserDisconnect = false;
+    if (this.authProvider) {
+      try {
+        this.apiKey = await this.authProvider();
+      } catch (err) {
+        const error = new LokutorError('auth.missing_key', 'The auth callback failed to return a credential', { original: err, retryable: true });
+        this.emit('error', error);
+        throw error;
+      }
+    }
 
     if (this.enableAudio || customAudioManager) {
       if (customAudioManager) {
@@ -280,11 +305,11 @@ export class VoiceAgentClient {
         let url = this.serverUrl;
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
-          url += `${separator}api_key=${this.apiKey}`;
+          url += `${separator}api_key=${encodeURIComponent(this.apiKey)}`;
         }
         if (this.agentId) {
           const separator = url.includes('?') ? '&' : '?';
-          url += `${separator}agent_id=${this.agentId}`;
+          url += `${separator}agent_id=${encodeURIComponent(this.agentId)}`;
         }
 
         const redactedUrl = url.replace(/api_key=[^&]+/, 'api_key=***');
@@ -361,7 +386,7 @@ export class VoiceAgentClient {
           });
           console.error('❌ WebSocket error:', error.message);
           sdkTrace('ws.error', { code: error.code, message: error.message });
-          if (this.onError) this.onError(error);
+          this.emit('error', error);
           if (!this.isConnected) {
             settle(() => reject(error));
           }
@@ -404,8 +429,8 @@ export class VoiceAgentClient {
             });
             console.log(`Session ended by the server (code ${event.code})`);
             this.emit('ended', { code: event.code, reason: event.reason || '' });
-            if (this.onError) this.onError(ended);
-            if (this.onStatus) this.onStatus('disconnected');
+            this.emit('error', ended);
+            this.emit('status', 'disconnected');
             return;
           }
 
@@ -416,7 +441,7 @@ export class VoiceAgentClient {
 
             console.warn(`Connection lost. Reconnecting in ${backoffDelay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
-            if (this.onStatus) this.onStatus('reconnecting');
+            this.emit('status', 'reconnecting');
 
             if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
             this.reconnectTimer = setTimeout(() => {
@@ -427,16 +452,16 @@ export class VoiceAgentClient {
             }, backoffDelay);
           } else if (this.isUserDisconnect) {
             console.log('Disconnected');
-            if (this.onStatus) this.onStatus('disconnected');
+            this.emit('status', 'disconnected');
           } else {
             console.log('Max reconnection attempts reached');
-            if (this.onStatus) this.onStatus('disconnected');
+            this.emit('status', 'disconnected');
           }
         };
 
       } catch (err) {
         const error = err instanceof LokutorError ? err : new LokutorError('internal.error', 'Failed to create WebSocket connection', { original: err });
-        if (this.onError) this.onError(error);
+        this.emit('error', error);
         settle(() => reject(error));
       }
     });
@@ -471,13 +496,14 @@ export class VoiceAgentClient {
     this.configConfirmed = false;
 
     // Send feature/config flags — order matches the test agent for consistency.
-    this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
-    this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
+    const agentSession = Boolean(this.agentId);
+    if (!agentSession || this.voiceExplicit) this.ws.send(JSON.stringify({ type: 'voice', data: this.voice }));
+    if (!agentSession || this.languageExplicit) this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
     if (this.tools && this.tools.length > 0) {
       this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
     }
     this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
-    this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
+    if (!agentSession || this.prompt) this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
 
     // Inform the server of our sample rates for echo cancellation.
     this.ws.send(JSON.stringify({ type: 'rates', playback: 44100, input: 16000 }));
@@ -545,6 +571,12 @@ export class VoiceAgentClient {
           sdkTrace('server_rates', { playback: this.serverPlaybackRate, input: this.serverInputRate });
           break;
         case 'transcript':
+          // Interim recognition while the caller is still speaking: its own event, never history. The
+          // final line follows without "partial" (it used to be stored and reported as final every time).
+          if (msg.partial) {
+            this.emit('transcription_partial', msg.data);
+            break;
+          }
           const role = msg.role === 'user' ? 'user' : 'agent';
           // Store in history
           this.messages.push({
@@ -554,11 +586,9 @@ export class VoiceAgentClient {
           });
 
           if (msg.role === 'user') {
-            if (this.onTranscription) this.onTranscription(msg.data);
             this.emit('transcription', msg.data);
             console.log(`💬 You: ${msg.data}`);
           } else {
-            if (this.onResponse) this.onResponse(msg.data);
             this.emit('response', msg.data);
             console.log(`🤖 Agent: ${msg.data}`);
           }
@@ -580,7 +610,6 @@ export class VoiceAgentClient {
           if (msg.data === 'interrupted' && this.audioManager) {
             this.audioManager.stopPlayback();
           }
-          if (this.onStatus) this.onStatus(msg.data);
           this.emit('status', msg.data);
           const icons: Record<string, string> = {
             'interrupted': '⚡',
@@ -633,11 +662,14 @@ export class VoiceAgentClient {
           break;
         }
 
-        case 'tool_call':
-          this.emit('tool_call', { name: msg.name, arguments: msg.arguments });
+        case 'tool_call': {
+          // Once, with the call_id submitToolResult needs. It was emitted twice (the first time
+          // without call_id), so a handler ran every tool twice and its first result was dropped.
+          const call: ToolCall = { name: msg.name, arguments: msg.arguments, call_id: msg.call_id };
           console.log(`🛠️ Tool Call: ${msg.name}(${msg.arguments})`);
-          this.emit('tool_call', msg);
+          this.emit('tool_call', call);
           break;
+        }
       }
     } catch (e) {
       sdkTrace('ws.recv.parse_error', { preview: text?.slice(0, 120) });
@@ -765,7 +797,7 @@ export class VoiceAgentClient {
    * No authentication required.
    */
   static async fetchVoices(baseUrl?: string): Promise<VoiceInfo[]> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const url = apiOrigin(baseUrl);
     const data = await fetchJson<{ voices: VoiceInfo[] }>(`${url}/voices`);
     return data.voices || [];
   }
@@ -775,7 +807,7 @@ export class VoiceAgentClient {
    * No authentication required.
    */
   static async fetchLanguages(baseUrl?: string): Promise<LanguageInfo[]> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const url = apiOrigin(baseUrl);
     const data = await fetchJson<{ languages: LanguageInfo[] }>(`${url}/languages`);
     return data.languages || [];
   }
@@ -785,7 +817,7 @@ export class VoiceAgentClient {
    * No authentication required.
    */
   static async fetchModels(baseUrl?: string): Promise<ModelInfo[]> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const url = apiOrigin(baseUrl);
     const data = await fetchJson<{ models: ModelInfo[] }>(`${url}/models`);
     return data.models || [];
   }
@@ -795,7 +827,7 @@ export class VoiceAgentClient {
    * No authentication required.
    */
   static async fetchConfig(baseUrl?: string): Promise<ServerConfig> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const url = apiOrigin(baseUrl);
     return fetchJson<ServerConfig>(`${url}/config`);
   }
 
@@ -804,17 +836,17 @@ export class VoiceAgentClient {
    * No authentication required.
    */
   static async fetchStatus(baseUrl?: string): Promise<ServerStatus> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
+    const url = apiOrigin(baseUrl);
     return fetchJson<ServerStatus>(`${url}/status`);
   }
 
   /**
-   * Fetch health/liveness status from the server.
-   * No authentication required.
+   * Fetch readiness from the server (GET /ready: 200 once it can serve).
+   * No authentication required. (/health is the operator dashboard's and needs its password.)
    */
   static async fetchHealth(baseUrl?: string): Promise<HealthStatus> {
-    const url = wsToHttp(baseUrl || DEFAULT_URLS.VOICE_AGENT);
-    return fetchJson<HealthStatus>(`${url}/health`);
+    const url = apiOrigin(baseUrl);
+    return fetchJson<HealthStatus>(`${url}/ready`);
   }
 
   /**
@@ -841,6 +873,7 @@ export class VoiceAgentClient {
    */
   public updateVoice(voice: VoiceId) {
     this.voice = voice;
+    this.voiceExplicit = true;
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
       this.ws.send(JSON.stringify({ type: 'voice', data: voice }));
       console.log(`⚙️ Updated voice: ${voice}`);
@@ -852,6 +885,7 @@ export class VoiceAgentClient {
    */
   public updateLanguage(language: Language) {
     this.language = language;
+    this.languageExplicit = true;
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
       this.ws.send(JSON.stringify({ type: 'language', data: language }));
       console.log(`⚙️ Updated language: ${language}`);
@@ -935,112 +969,133 @@ export class TTSClient {
     onTTFB?: (ms: number) => void;
     onError?: (error: any) => void;
   }): Promise<void> {
+    // Done when the server says so ("EOS"); a server error frame rejects. It used to resolve after 2 s
+    // without audio, so an error looked like success and a request whose first audio was queued for more
+    // than 2 s (the synthesis pool at its cap) was cut off empty.
     return new Promise((resolve, reject) => {
-      let activityTimeout: any;
+      let timer: any;
       let ws: WebSocket;
       let startTime: number;
       let firstByteReceived = false;
+      let finished = false;
 
-      const refreshTimeout = () => {
-        if (activityTimeout) clearTimeout(activityTimeout);
-        activityTimeout = setTimeout(() => {
-          console.log("⏱️ TTS synthesis reached inactivity timeout (2s) - resolving");
-          if (ws) ws.close();
+      const finish = (err?: unknown) => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        try { ws?.close(); } catch { /* already closed */ }
+        if (err) {
+          if (options.onError) options.onError(err);
+          reject(err);
+        } else {
           resolve();
-        }, 2000);
+        }
+      };
+      // 30 s for the first audio, then 15 s of silence between chunks before giving up.
+      const arm = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => finish(new LokutorError('internal.timeout' as ErrorCode,
+          firstByteReceived ? 'TTS stream stalled' : 'No audio within 30 s', { retryable: true })),
+          firstByteReceived ? 15000 : 30000);
       };
 
       try {
         let url = DEFAULT_URLS.TTS;
         if (this.apiKey) {
           const separator = url.includes('?') ? '&' : '?';
-          url += `${separator}api_key=${this.apiKey}`;
+          url += `${separator}api_key=${encodeURIComponent(this.apiKey)}`;
         }
 
         ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
-          refreshTimeout();
-          const req = {
+          arm();
+          // speed and steps only when set: the server's defaults are what production is tuned for (the
+          // SDK used to send speed 1.05 and steps 24 on every request).
+          const req: Record<string, unknown> = {
             text: options.text,
             voice: options.voice || VoiceStyle.F1,
             language: options.language || Language.ENGLISH,
-            speed: options.speed || 1.05,
-            steps: options.steps || 24,
             visemes: options.visemes || false
           };
+          if (options.speed !== undefined) req.speed = options.speed;
+          if (options.steps !== undefined) req.steps = options.steps;
           ws.send(JSON.stringify(req));
           startTime = nowMs();
         };
 
         ws.onmessage = async (event) => {
-          refreshTimeout();
           if (event.data instanceof ArrayBuffer) {
             if (!firstByteReceived) {
               const ttfb = nowMs() - startTime;
               if (options.onTTFB) options.onTTFB(ttfb);
               firstByteReceived = true;
             }
+            arm();
             if (options.onAudio) options.onAudio(new Uint8Array(event.data));
             return;
           }
           const text = event.data.toString();
           if (text === 'EOS') {
-            if (activityTimeout) clearTimeout(activityTimeout);
-            ws.close();
-            resolve();
+            finish();
             return;
           }
 
+          let msg: any;
           try {
-            const msg = JSON.parse(text);
-            
-            if (msg.type === 'audio' && msg.data) {
-              const audioBuffer = base64ToUint8Array(msg.data);
-              if (!firstByteReceived) {
-                const ttfb = nowMs() - startTime;
-                if (options.onTTFB) options.onTTFB(ttfb);
-                firstByteReceived = true;
-              }
-              if (options.onAudio) options.onAudio(audioBuffer);
-              return;
-            }
+            msg = JSON.parse(text);
+          } catch {
+            return;
+          }
 
-            if (msg.type === 'visemes' && Array.isArray(msg.data) && options.onVisemes) {
-              options.onVisemes(normalizeVisemes(msg.data));
-              return;
-            }
+          if (msg.type === 'error') {
+            const data = typeof msg.data === 'object' && msg.data ? msg.data : { message: msg.data };
+            finish(new LokutorError((data.code ?? 'internal.error') as ErrorCode, data.message ?? 'TTS failed', {
+              detail: data.detail,
+              retryable: data.retryable ?? false,
+            }));
+            return;
+          }
 
-            if (Array.isArray(msg) && options.onVisemes) {
-              options.onVisemes(normalizeVisemes(msg));
-              return;
+          if (msg.type === 'audio' && msg.data) {
+            const audioBuffer = base64ToUint8Array(msg.data);
+            if (!firstByteReceived) {
+              const ttfb = nowMs() - startTime;
+              if (options.onTTFB) options.onTTFB(ttfb);
+              firstByteReceived = true;
             }
-            
-            if (msg.type === 'eos') {
-              if (activityTimeout) clearTimeout(activityTimeout);
-              ws.close();
-              resolve();
-            }
-          } catch (e) {
+            arm();
+            if (options.onAudio) options.onAudio(audioBuffer);
+            return;
+          }
+
+          if (msg.type === 'visemes' && Array.isArray(msg.data) && options.onVisemes) {
+            options.onVisemes(normalizeVisemes(msg.data));
+            return;
+          }
+
+          if (Array.isArray(msg) && options.onVisemes) {
+            options.onVisemes(normalizeVisemes(msg));
+            return;
+          }
+
+          if (msg.type === 'eos') {
+            finish();
           }
         };
 
-        ws.onerror = (err) => {
-          if (activityTimeout) clearTimeout(activityTimeout);
-          if (options.onError) options.onError(err);
-          reject(err);
-        };
+        ws.onerror = (err) => finish(err);
 
-        ws.onclose = () => {
-          if (activityTimeout) clearTimeout(activityTimeout);
-          resolve();
+        ws.onclose = (ev) => {
+          // A close before EOS is an error unless audio already arrived and the server closed cleanly.
+          if (!finished) {
+            if (firstByteReceived && ev.code === 1000) finish();
+            else finish(new LokutorError('internal.error' as ErrorCode, `TTS socket closed (${ev.code}${ev.reason ? `: ${ev.reason}` : ''})`, { retryable: true }));
+          }
         };
-
       } catch (err) {
-        if (activityTimeout) clearTimeout(activityTimeout);
-        if (options.onError) options.onError(err);
-        reject(err);
+        finish(err);
       }
     });
   }
@@ -1170,7 +1225,7 @@ export class SpeechToTextClient {
       try {
         let url = this.serverUrl;
         const separator = url.includes('?') ? '&' : '?';
-        url += `${separator}api_key=${this.apiKey}`;
+        url += `${separator}api_key=${encodeURIComponent(this.apiKey)}`;
 
         this.ws = new WebSocket(url);
 
@@ -1179,11 +1234,22 @@ export class SpeechToTextClient {
           this.onStatusChange?.('connected');
           this.ws!.send(JSON.stringify({ language: this.language || Language.ENGLISH, vad: this.vad }));
 
-          await this.audioManager!.startMicrophone((data) => {
-            if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
-              this.ws.send(data);
-            }
-          });
+          // A denied or missing microphone rejects instead of leaving connect() pending forever (the
+          // same hang 1.5.1 fixed in VoiceAgentClient).
+          try {
+            await this.audioManager!.startMicrophone((data) => {
+              if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
+                this.ws.send(data);
+              }
+            });
+          } catch (err) {
+            const error = err instanceof LokutorError ? err
+              : new LokutorError('audio.microphone_unavailable' as ErrorCode, 'Could not start the microphone', { original: err });
+            this.onError?.(error);
+            try { this.ws?.close(); } catch { /* already closed */ }
+            settle(() => reject(error));
+            return;
+          }
 
           settle(() => resolve(true));
         };
@@ -1199,7 +1265,10 @@ export class SpeechToTextClient {
                 this.onPartialTranscript?.(msg.data ?? '');
               }
             } else if (msg.type === 'error') {
-              this.onError?.(new LokutorError('internal.error', msg.data ?? 'STT error'));
+              const data = typeof msg.data === 'object' && msg.data ? msg.data : { message: msg.data };
+              this.onError?.(new LokutorError((data.code ?? 'internal.error') as ErrorCode, data.message ?? 'STT error', {
+                detail: data.detail, retryable: data.retryable ?? false,
+              }));
             }
           } catch {
             // ignore malformed frames

@@ -91,7 +91,7 @@ describe('VoiceAgentClient REST discovery', () => {
     mockResponse({ voices: [{ id: 'F1', gender: 'female', languages: ['en'] }] });
     const voices = await VoiceAgentClient.fetchVoices('wss://api.lokutor.com/ws/agent');
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.lokutor.com/ws/agent/voices',
+      'https://api.lokutor.com/voices',
       expect.objectContaining({ headers: { Accept: 'application/json' } })
     );
     expect(voices).toHaveLength(1);
