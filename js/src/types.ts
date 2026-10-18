@@ -4,13 +4,13 @@
 /**
  * Built-in voices.
  *
- * Versa 2.0 names each voice for the language its reference speaker was recorded in: `EN_*` are
- * English speakers, `ESCA_*` Spanish/Catalan. That is a guide to how a voice sounds, not a
- * restriction — the model is zero-shot, so any voice can speak any supported language.
+ * Use `F1`–`F5` / `M1`–`M5` (what GET /voices lists). Each is a slot: the server resolves it to the
+ * native speaker of the call's language in that slot, so `F1` in Spanish is a Spanish speaker and `F1`
+ * in English an English one.
  *
- * The bare `F1`–`M5` values are the Versa 1.x names. They still work: the server maps them onto
- * the matching Versa 2.0 voice, keeping the language family of the call. Prefer the explicit names
- * in new code.
+ * `EN_*` pin the English speakers regardless of language. `ESCA_*` is the retired Spanish/Catalan pack
+ * (its recordings measure as noisy in the top octave); do not use it in new code — `F1`–`M5` with
+ * `language: 'es'` gives the vetted Spanish voices.
  *
  * This enum is a convenience, not the full set — a cloned voice's id (`clone_…`) is also a valid
  * `voice`, which is why the config fields accept any string.
@@ -29,36 +29,36 @@ export enum VoiceStyle {
   EN_M5 = "en_m5",
 
   // Spanish / Catalan reference speakers
+  /** @deprecated Retired pack; use F1 with language "es". */
   ESCA_F1 = "esca_f1",
+  /** @deprecated Retired pack; use F2 with language "es". */
   ESCA_F2 = "esca_f2",
+  /** @deprecated Retired pack; use F3 with language "es". */
   ESCA_F3 = "esca_f3",
+  /** @deprecated Retired pack; use F4 with language "es". */
   ESCA_F4 = "esca_f4",
+  /** @deprecated Retired pack; use F5 with language "es". */
   ESCA_F5 = "esca_f5",
+  /** @deprecated Retired pack; use M1 with language "es". */
   ESCA_M1 = "esca_m1",
+  /** @deprecated Retired pack; use M2 with language "es". */
   ESCA_M2 = "esca_m2",
+  /** @deprecated Retired pack; use M3 with language "es". */
   ESCA_M3 = "esca_m3",
+  /** @deprecated Retired pack; use M4 with language "es". */
   ESCA_M4 = "esca_m4",
+  /** @deprecated Retired pack; use M5 with language "es". */
   ESCA_M5 = "esca_m5",
 
-  /** @deprecated Versa 1.x name, mapped server-side. Use EN_F1 / ESCA_F1. */
   F1 = "F1",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   F2 = "F2",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   F3 = "F3",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   F4 = "F4",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   F5 = "F5",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   M1 = "M1",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   M2 = "M2",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   M3 = "M3",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   M4 = "M4",
-  /** @deprecated Versa 1.x name, mapped server-side. */
   M5 = "M5",
 }
 

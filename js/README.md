@@ -63,6 +63,33 @@ await client.synthesize({
 });
 ```
 
+## Using the SDK in a browser without exposing your key
+
+Never ship an API key in browser code. Mint a short-lived ticket on your server and let the SDK fetch a
+fresh one before every connect (tickets last 10 minutes, so reconnects need a new one):
+
+```js
+// Your server (Node 22+, key stays here)
+app.post('/lokutor-ticket', async (_req, res) => {
+  const r = await fetch('https://api.lokutor.com/ws-ticket', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.LOKUTOR_API_KEY}` },
+  });
+  res.json(await r.json()); // { ticket: "wst_...", expires_in: 600 }
+});
+
+// The page
+const agent = new VoiceAgentClient({
+  auth: async () => (await (await fetch('/lokutor-ticket', { method: 'POST' })).json()).ticket,
+  prompt: 'You are a helpful assistant.',
+  enableAudio: true,
+});
+await agent.connect();
+```
+
+To run an agent you configured in the dashboard, pass `agentId` and leave out `prompt`, `voice` and
+`language`: only what you set explicitly overrides the agent.
+
 ## Hardware Compatibility
 
 This SDK is platform-agnostic and works in both **Node.js** (22 or newer, for the global `WebSocket`) and **Browser** environments. 
