@@ -25,6 +25,7 @@ static class UnitTests
         Run("Session: Speaking holds through a reply and ends after it", SessionSpeakingState);
         Run("Session: the mic stays muted until the voice has really been heard", MicMutedThroughEcho);
         Run("Session: a player start that leads nowhere returns to Ready", FalseStartReturnsToReady);
+        Run("Session: after an action the character thinks until its reply", ThinksAfterAction);
         Run("Session: transcripts and states reach Update()", SessionEvents);
         Run("Session: an action runs and answers the server", SessionAction);
         Run("Session: unknown action and a throwing handler still answer", SessionActionErrors);
@@ -224,6 +225,28 @@ static class UnitTests
         System.Threading.Thread.Sleep(1200);
         s.Update();
         Check(s.State == AgentState.Ready, "Ready once nothing followed and the mic has been quiet: " + s.State);
+    }
+
+    static void ThinksAfterAction()
+    {
+        var s = new LokutorSession(new SessionOptions { ApiKey = "test", EchoTailMs = 100 });
+        s.AddAction("give_item", "x", a => "ok", new ActionParam("item", "x"));
+        s.HandleServerMessage("{\"type\":\"status\",\"data\":\"thinking\",\"generation\":1}");
+        s.HandleServerMessage(AudioFrame(1, 441));               // the filler ("one moment")
+        s.HandleServerMessage("{\"type\":\"tool_call\",\"name\":\"give_item\",\"arguments\":\"{}\",\"call_id\":\"c1\"}");
+        s.Playback.Read(new float[441], 0, 441);
+        System.Threading.Thread.Sleep(600);
+        s.Update();
+        Check(s.State == AgentState.Thinking, "the filler is over but the reply is owed: Thinking, not Ready (" + s.State + ")");
+        s.HandleServerMessage("{\"type\":\"transcript\",\"role\":\"agent\",\"data\":\"Here you go.\"}");
+        s.HandleServerMessage("{\"type\":\"status\",\"data\":\"thinking\",\"generation\":2}");
+        s.HandleServerMessage(AudioFrame(2, 441));
+        s.Update();
+        Check(s.State == AgentState.Speaking, "Speaking the reply: " + s.State);
+        s.Playback.Read(new float[441], 0, 441);
+        System.Threading.Thread.Sleep(600);
+        s.Update();
+        Check(s.State == AgentState.Ready, "Ready once the reply has played: " + s.State);
     }
 
     static void SessionEvents()

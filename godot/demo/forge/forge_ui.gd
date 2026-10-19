@@ -18,6 +18,9 @@ var _subs: VBoxContainer
 var _card: PanelContainer
 var _card_title: Label
 var _card_detail: Label
+var _card_items: Array[String] = []
+var _card_spent := 0
+var _card_tween: Tween
 var _title: Control
 var _end: Control
 var _gold_shown := 30.0
@@ -47,19 +50,26 @@ func set_gold(gold: int) -> void:
 	_gold_target = gold
 
 
-func add_to_bag(item_name: String) -> void:
+## Puts an item in the bag and shows it on the "received" card; items bought together share one card.
+func add_to_bag(item_name: String, price: int) -> void:
 	_bag_box.add_child(_tag(item_name.capitalize()))
-	_card_title.text = "Received: " + item_name.capitalize()
-	_card.modulate.a = 0.0
-	_card.visible = true
-	var tw := create_tween()
-	tw.tween_property(_card, "modulate:a", 1.0, 0.25)
-	tw.tween_interval(2.6)
-	tw.tween_property(_card, "modulate:a", 0.0, 0.5)
-
-
-func set_card_detail(text: String) -> void:
-	_card_detail.text = text
+	if not _card.visible:
+		_card_items.clear()
+		_card_spent = 0
+	_card_items.append(item_name.capitalize())
+	_card_spent += price
+	_card_title.text = "Received: " + " + ".join(_card_items)
+	_card_detail.text = "-%d gold" % _card_spent
+	if _card_tween != null:
+		_card_tween.kill()
+	if not _card.visible:
+		_card.modulate.a = 0.0
+		_card.visible = true
+	_card_tween = create_tween()
+	_card_tween.tween_property(_card, "modulate:a", 1.0, 0.25)
+	_card_tween.tween_interval(2.8)
+	_card_tween.tween_property(_card, "modulate:a", 0.0, 0.5)
+	_card_tween.tween_callback(func(): _card.visible = false)
 
 
 ## Shows a subtitle line; agent lines are revealed at roughly speaking pace.
@@ -242,9 +252,10 @@ func _build_card() -> void:
 	_card.anchor_right = 1.0
 	_card.anchor_top = 0.5
 	_card.anchor_bottom = 0.5
-	_card.offset_left = -500
+	_card.offset_left = -60
 	_card.offset_right = -60
 	_card.offset_top = -80
+	_card.grow_horizontal = Control.GROW_DIRECTION_BEGIN   # as wide as its text, growing left
 	_card.visible = false
 	add_child(_card)
 	var col := VBoxContainer.new()
