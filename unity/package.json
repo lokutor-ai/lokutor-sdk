@@ -1,0 +1,22 @@
+{
+  "name": "com.lokutor.voice-agents",
+  "version": "0.1.0",
+  "displayName": "Lokutor Voice Agents",
+  "description": "Talk to your game characters. Add a Lokutor Agent to any character: it listens through the microphone, answers in its own voice from where it stands, moves its mouth, and calls your game's functions when the conversation calls for it.",
+  "unity": "2021.3",
+  "author": {
+    "name": "Lokutor",
+    "email": "contact@lokutor.com",
+    "url": "https://lokutor.com"
+  },
+  "documentationUrl": "https://docs.lokutor.com",
+  "license": "MIT",
+  "keywords": ["voice", "ai", "npc", "dialogue", "speech", "conversation", "lip sync"],
+  "samples": [
+    {
+      "displayName": "Talking blacksmith",
+      "description": "One script on an empty GameObject: press Play and talk to a blacksmith who can sell you a sword.",
+      "path": "Samples~/TalkingBlacksmith"
+    }
+  ]
+}
