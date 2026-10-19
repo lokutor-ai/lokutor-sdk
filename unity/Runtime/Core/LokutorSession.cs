@@ -133,6 +133,9 @@ namespace Lokutor
         volatile bool replyAudioArrived;
         long audibleUntilTicks;
         DateTime playerTalkingSinceUtc = DateTime.MinValue;
+        // After an action, the character still owes the reply that uses its result: until that reply's
+        // text arrives (or 8 s), it is thinking, not done.
+        long replyOwedUntilTicks;
         long lastMicVoiceTicks;
         volatile AgentState state = AgentState.Disconnected;
         AgentState reportedState = AgentState.Disconnected;
@@ -312,6 +315,8 @@ namespace Lokutor
             sendSignal.Release();
         }
 
+        bool ReplyOwed => DateTime.UtcNow.Ticks < System.Threading.Interlocked.Read(ref replyOwedUntilTicks);
+
         void NoteMicLevel(float[] samples)
         {
             if (samples.Length == 0) return;
@@ -358,7 +363,7 @@ namespace Lokutor
                 bool finished = replyAudioArrived
                     ? (now - (lastAgentAudioUtc > speakingSinceUtc ? lastAgentAudioUtc : speakingSinceUtc)).TotalMilliseconds > 400 && !AgentAudible
                     : (now - speakingSinceUtc).TotalSeconds > 5;
-                if (finished) SetState(AgentState.Ready);
+                if (finished) SetState(ReplyOwed ? AgentState.Thinking : AgentState.Ready);
             }
             // The server says when the player starts talking, but not when a start led nowhere (a noise,
             // or speech it set aside). Without a reply under way, the player is done once the microphone
@@ -367,8 +372,14 @@ namespace Lokutor
             {
                 var now = DateTime.UtcNow;
                 var lastVoice = new DateTime(System.Threading.Interlocked.Read(ref lastMicVoiceTicks), DateTimeKind.Utc);
-                if ((now - playerTalkingSinceUtc).TotalSeconds > 2.5 && (now - lastVoice).TotalSeconds > 2.0)
+                if ((now - playerTalkingSinceUtc).TotalSeconds > 2.5 && (now - lastVoice).TotalSeconds > 2.0 && !ReplyOwed)
                     SetState(AgentState.Ready);
+            }
+            if (state == AgentState.Thinking && !ReplyOwed && System.Threading.Interlocked.Read(ref replyOwedUntilTicks) != 0)
+            {
+                // The reply owed after an action never came (8 s): stop waiting for it.
+                System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, 0);
+                SetState(AgentState.Ready);
             }
             while (pending.TryDequeue(out var a))
             {
@@ -515,7 +526,11 @@ namespace Lokutor
                     string text = Str(msg, "data");
                     if (string.IsNullOrEmpty(text)) text = Str(msg, "text");
                     bool partial = msg.TryGetValue("partial", out var p) && p is bool pb && pb;
-                    if (Str(msg, "role") == "agent") Post(() => AgentSaid?.Invoke(text));
+                    if (Str(msg, "role") == "agent")
+                    {
+                        System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, 0); // the reply after an action has come
+                        Post(() => AgentSaid?.Invoke(text));
+                    }
                     else if (partial) Post(() => PlayerSaidPartial?.Invoke(text));
                     else Post(() => PlayerSaid?.Invoke(text));
                     break;
@@ -604,6 +619,8 @@ namespace Lokutor
 
         void OnToolCall(string name, string arguments, string callId)
         {
+            System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, DateTime.UtcNow.AddSeconds(8).Ticks);
+            if (state != AgentState.Speaking) SetState(AgentState.Thinking);
             AgentAction action;
             lock (actions) actions.TryGetValue(name ?? "", out action);
             var args = new ActionArgs(arguments);

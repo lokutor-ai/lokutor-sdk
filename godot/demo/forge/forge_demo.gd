@@ -16,8 +16,9 @@ const Dwarf := preload("res://demo/forge/dwarf.gd")
 const ForgeUI := preload("res://demo/forge/forge_ui.gd")
 
 const PRICES := {"iron sword": 20, "steel shield": 25, "healing potion": 5}
-const PERSONA := "You are Brom, the blacksmith of Oakvale, a gruff but warm-hearted dwarf. Speak in one or two short sentences, with a little dwarven humour. " + \
+const PERSONA := "You are Brom, the blacksmith of Oakvale, a gruff but warm-hearted dwarf who knows the mountain roads well. Speak in one or two short sentences, with a little dwarven humour. " + \
 	"Your shop sells: iron sword (20 gold), steel shield (25 gold), healing potion (5 gold). Nothing else. " + \
+	"When the player asks what to take, recommend something from your shop and say why. " + \
 	"When the player agrees to buy something, call give_item once for each item; it takes the gold. " + \
 	"Greet the player briefly when they walk in."
 const LINES := 3
@@ -119,8 +120,7 @@ func _give_item(args: Dictionary) -> String:
 		return "The player has only %d gold; the %s costs %d." % [gold, item, price]
 	gold -= price
 	ui.set_gold(gold)
-	ui.set_card_detail("-%d gold" % price)
-	ui.add_to_bag(item)
+	ui.add_to_bag(item, price)
 	dwarf.give(item)
 	return "Gave the %s. The player paid %d gold and has %d left." % [item, price, gold]
 

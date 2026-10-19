@@ -81,6 +81,9 @@ var _last_audio_ms := 0
 var _speaking_since_ms := 0
 var _reply_audio_arrived := false
 var _player_talking_since_ms := 0
+## After an action the character still owes the reply that uses its result: until that reply's text
+## arrives (or 8 s), it is thinking, not done.
+var _reply_owed_until_ms := 0
 var _mic_voice_ms := 0
 
 # Playback: decoded voice waits in _voice until the generator has room.
@@ -311,6 +314,7 @@ func _handle_message(text: String) -> void:
 		"transcript":
 			var t: String = str(msg.get("data", msg.get("text", "")))
 			if str(msg.get("role", "user")) == "agent":
+				_reply_owed_until_ms = 0   # the reply after an action has come
 				character_said.emit(t)
 			elif msg.get("partial", false):
 				player_said_partial.emit(t)
@@ -356,6 +360,9 @@ func _on_status(status: String, generation: int, sid: String) -> void:
 
 
 func _on_tool_call(action_name: String, arguments: String, call_id: String) -> void:
+	_reply_owed_until_ms = Time.get_ticks_msec() + 8000
+	if state != State.SPEAKING:
+		_set_state(State.THINKING)
 	var args = JSON.parse_string(arguments) if arguments != "" else {}
 	if not (args is Dictionary):
 		args = {}
@@ -509,7 +516,7 @@ func _update_state() -> void:
 		var finished := (now - maxi(_last_audio_ms, _speaking_since_ms) > 400 and not _agent_audible()) if _reply_audio_arrived \
 			else now - _speaking_since_ms > 5000
 		if finished:
-			_set_state(State.READY)
+			_set_state(State.THINKING if _reply_owed() else State.READY)
 
 
 func _update_player_talking() -> void:
@@ -517,8 +524,16 @@ func _update_player_talking() -> void:
 	# speech it set aside). Without a reply under way, the player is done once the microphone has
 	# been quiet for 2 s.
 	var now := Time.get_ticks_msec()
-	if state == State.PLAYER_TALKING and now - _player_talking_since_ms > 2500 and now - _mic_voice_ms > 2000:
+	if state == State.PLAYER_TALKING and now - _player_talking_since_ms > 2500 and now - _mic_voice_ms > 2000 and not _reply_owed():
 		_set_state(State.READY)
+	if state == State.THINKING and _reply_owed_until_ms != 0 and not _reply_owed():
+		# The reply owed after an action never came (8 s): stop waiting for it.
+		_reply_owed_until_ms = 0
+		_set_state(State.READY)
+
+
+func _reply_owed() -> bool:
+	return Time.get_ticks_msec() < _reply_owed_until_ms
 
 
 func _update_mouth() -> void:
