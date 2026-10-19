@@ -10,7 +10,18 @@ Build real-time, high-fidelity AI voice experiences with Lokutor. This repositor
 | :--- | :--- | :--- | :--- |
 | **Python** | [`lokutor`](https://pypi.org/project/lokutor/) | [Python README](python/README.md) | Stable |
 | **JavaScript/TS** | `@lokutor/sdk` | [JavaScript README](js/README.md) | Stable |
+| **Unity** (C#) | `com.lokutor.voice-agents` | [Unity README](unity/README.md) | Preview |
+| **Godot** (GDScript) | `addons/lokutor` | [Godot README](godot/README.md) | Preview |
 | **Go** | `Coming Soon` | - | Planned |
+
+### 🎮 Game engines
+
+Talk to your game characters: add a **Lokutor Agent** to a character in Unity or Godot and it listens
+through the microphone, answers in its own voice from where it stands, moves its mouth, and calls your
+game's functions (sell an item, open a gate) when the conversation calls for it.
+
+- **Unity:** Package Manager > Add package from git URL > `https://github.com/lokutor-ai/lokutor-sdk.git?path=/unity`
+- **Godot:** copy `godot/addons/lokutor` into your project and enable the plugin
 
 ---
 

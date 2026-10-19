@@ -1,0 +1,5 @@
+.godot/
+*.import
+tests/out/
+tests/lines/
+demo/forge/lines/

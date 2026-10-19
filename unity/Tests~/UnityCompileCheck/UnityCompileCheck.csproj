@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Type-checks the Unity layer against declarations of the Unity APIs it uses (UnityStubs.cs, taken
+       from the Unity scripting reference). It proves the code compiles as C# 9 / .NET Standard 2.1 against
+       those signatures; behaviour inside the editor still needs a real Unity run. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants Condition="'$(InputSystem)' == 'true'">$(DefineConstants);LOKUTOR_INPUT_SYSTEM;ENABLE_INPUT_SYSTEM</DefineConstants>
+    <DefineConstants Condition="'$(InputSystem)' != 'true'">$(DefineConstants);ENABLE_LEGACY_INPUT_MANAGER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Runtime/**/*.cs" />
+    <Compile Include="../../Samples~/**/*.cs" />
+    <Compile Include="UnityStubs.cs" />
+  </ItemGroup>
+</Project>
