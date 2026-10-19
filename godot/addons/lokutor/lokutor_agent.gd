@@ -80,6 +80,8 @@ var _jaw_rest: Vector3
 var _last_audio_ms := 0
 var _speaking_since_ms := 0
 var _reply_audio_arrived := false
+var _player_talking_since_ms := 0
+var _mic_voice_ms := 0
 
 # Playback: decoded voice waits in _voice until the generator has room.
 var _player: Node
@@ -191,6 +193,11 @@ func feed_microphone(samples: PackedFloat32Array, rate: int) -> void:
 	var mono16 := _resample(samples, rate, INPUT_RATE)
 	if mute_mic_while_speaking and _agent_audible():
 		mono16.fill(0.0)
+	var energy := 0.0
+	for v in mono16:
+		energy += v * v
+	if mono16.size() > 0 and sqrt(energy / mono16.size()) > 0.02:
+		_mic_voice_ms = Time.get_ticks_msec()
 	var bytes := PackedByteArray()
 	bytes.resize(mono16.size() * 2)
 	for i in mono16.size():
@@ -222,6 +229,7 @@ func _process(_delta: float) -> void:
 		return
 	_pump_playback()
 	_update_state()
+	_update_player_talking()
 	_update_mouth()
 
 
@@ -504,6 +512,15 @@ func _update_state() -> void:
 			_set_state(State.READY)
 
 
+func _update_player_talking() -> void:
+	# The server says when the player starts talking, but not when a start led nowhere (a noise, or
+	# speech it set aside). Without a reply under way, the player is done once the microphone has
+	# been quiet for 2 s.
+	var now := Time.get_ticks_msec()
+	if state == State.PLAYER_TALKING and now - _player_talking_since_ms > 2500 and now - _mic_voice_ms > 2000:
+		_set_state(State.READY)
+
+
 func _update_mouth() -> void:
 	var now := Time.get_ticks_msec()
 	while not _mouth_schedule.is_empty() and _mouth_schedule[0][0] <= now:
@@ -610,6 +627,8 @@ func _set_state(next: State) -> void:
 	if next == State.SPEAKING and state != State.SPEAKING:
 		_speaking_since_ms = Time.get_ticks_msec()
 		_reply_audio_arrived = false
+	if next == State.PLAYER_TALKING and state != State.PLAYER_TALKING:
+		_player_talking_since_ms = Time.get_ticks_msec()
 	if next == state:
 		return
 	state = next

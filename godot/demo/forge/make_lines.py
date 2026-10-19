@@ -3,10 +3,11 @@
 Needs LOKUTOR_API_KEY. Writes demo/forge/lines/line1.wav..line3.wav."""
 import json, os, pathlib, urllib.request
 
+# One sentence each, no pause inside: a pause can end the player's turn halfway through a line.
 LINES = [
-    "Hey Brom! I'm heading up the mountain pass tonight. What should I take?",
-    "Then I'll take the iron sword. And a healing potion, just in case.",
-    "Perfect. Thanks, Brom! See you when I'm back.",
+    "Hey Brom, what should I take for the mountain pass tonight?",
+    "I'll take the iron sword and a healing potion, please.",
+    "Thanks Brom, see you when I'm back!",
 ]
 VOICE = os.environ.get("PLAYER_VOICE", "F2")
 

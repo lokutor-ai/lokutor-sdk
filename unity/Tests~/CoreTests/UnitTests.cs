@@ -24,6 +24,7 @@ static class UnitTests
         Run("Session: replies, interruptions and stale audio", SessionAudio);
         Run("Session: Speaking holds through a reply and ends after it", SessionSpeakingState);
         Run("Session: the mic stays muted until the voice has really been heard", MicMutedThroughEcho);
+        Run("Session: a player start that leads nowhere returns to Ready", FalseStartReturnsToReady);
         Run("Session: transcripts and states reach Update()", SessionEvents);
         Run("Session: an action runs and answers the server", SessionAction);
         Run("Session: unknown action and a throwing handler still answer", SessionActionErrors);
@@ -208,6 +209,21 @@ static class UnitTests
         Check(Audible(), "and through the echo tail after it");
         System.Threading.Thread.Sleep(450);
         Check(!Audible(), "open again once the echo has died down");
+    }
+
+    static void FalseStartReturnsToReady()
+    {
+        var s = new LokutorSession(new SessionOptions { ApiKey = "test" });
+        s.HandleServerMessage("{\"type\":\"status\",\"data\":\"connected\"}");
+        s.HandleServerMessage("{\"type\":\"status\",\"data\":\"listening\"}");
+        s.Update();
+        Check(s.State == AgentState.PlayerTalking, "the server's 'listening' means the player is talking");
+        System.Threading.Thread.Sleep(1500);
+        s.Update();
+        Check(s.State == AgentState.PlayerTalking, "still talking 1.5 s later (the server may still answer)");
+        System.Threading.Thread.Sleep(1200);
+        s.Update();
+        Check(s.State == AgentState.Ready, "Ready once nothing followed and the mic has been quiet: " + s.State);
     }
 
     static void SessionEvents()

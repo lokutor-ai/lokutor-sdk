@@ -132,6 +132,8 @@ namespace Lokutor
         DateTime speakingSinceUtc = DateTime.MinValue;
         volatile bool replyAudioArrived;
         long audibleUntilTicks;
+        DateTime playerTalkingSinceUtc = DateTime.MinValue;
+        long lastMicVoiceTicks;
         volatile AgentState state = AgentState.Disconnected;
         AgentState reportedState = AgentState.Disconnected;
 
@@ -296,6 +298,7 @@ namespace Lokutor
             var resampled = micResampler.Process(samples, offset, count);
             if (resampled.Length == 0) return;
             if (options.MuteMicWhileSpeaking && AgentAudible) Array.Clear(resampled, 0, resampled.Length);
+            NoteMicLevel(resampled);
             binaryOut.Enqueue(Pcm16.FromFloat(resampled, 0, resampled.Length));
             sendSignal.Release();
         }
@@ -304,8 +307,17 @@ namespace Lokutor
         public void SendPcm16(byte[] pcm16At16k)
         {
             if (!IsConnected || pcm16At16k == null || pcm16At16k.Length == 0) return;
+            NoteMicLevel(Pcm16.ToFloat(pcm16At16k));
             binaryOut.Enqueue(pcm16At16k);
             sendSignal.Release();
+        }
+
+        void NoteMicLevel(float[] samples)
+        {
+            if (samples.Length == 0) return;
+            double sum = 0;
+            foreach (var v in samples) sum += v * v;
+            if (Math.Sqrt(sum / samples.Length) > 0.02) System.Threading.Interlocked.Exchange(ref lastMicVoiceTicks, DateTime.UtcNow.Ticks);
         }
 
         /// <summary>
@@ -348,6 +360,16 @@ namespace Lokutor
                     : (now - speakingSinceUtc).TotalSeconds > 5;
                 if (finished) SetState(AgentState.Ready);
             }
+            // The server says when the player starts talking, but not when a start led nowhere (a noise,
+            // or speech it set aside). Without a reply under way, the player is done once the microphone
+            // has been quiet for 2 s.
+            if (state == AgentState.PlayerTalking)
+            {
+                var now = DateTime.UtcNow;
+                var lastVoice = new DateTime(System.Threading.Interlocked.Read(ref lastMicVoiceTicks), DateTimeKind.Utc);
+                if ((now - playerTalkingSinceUtc).TotalSeconds > 2.5 && (now - lastVoice).TotalSeconds > 2.0)
+                    SetState(AgentState.Ready);
+            }
             while (pending.TryDequeue(out var a))
             {
                 try { a(); }
@@ -363,6 +385,7 @@ namespace Lokutor
 
         void SetState(AgentState next)
         {
+            if (next == AgentState.PlayerTalking && state != AgentState.PlayerTalking) playerTalkingSinceUtc = DateTime.UtcNow;
             if (next == AgentState.Speaking && state != AgentState.Speaking)
             {
                 speakingSinceUtc = DateTime.UtcNow;

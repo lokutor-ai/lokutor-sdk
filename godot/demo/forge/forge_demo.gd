@@ -40,6 +40,8 @@ var _look_at := Vector3(0.15, 1.35, -2.4)
 var _t := 0.0
 var _spoke_at := -1.0
 var _noise := FastNoiseLite.new()
+var _recording := false
+var _wall0 := 0
 
 # Scripted player
 var _player_voice: AudioStreamPlayer
@@ -50,10 +52,10 @@ var _line_playing := false
 
 
 func _ready() -> void:
-	var recording := OS.has_feature("movie") or "--write-movie" in OS.get_cmdline_args()
-	if recording:
+	_recording = OS.has_feature("movie") or "--write-movie" in OS.get_cmdline_args()
+	if _recording:
 		scripted = true
-		Engine.max_fps = 30   # keep the movie in real time: the conversation happens live
+		_wall0 = Time.get_ticks_usec()
 	_build_world()
 	_build_forge()
 	_build_props()
@@ -80,6 +82,13 @@ func _ready() -> void:
 	brom.state_changed.connect(_on_state)
 	brom.character_said.connect(func(text): ui.say("Brom", text, false))
 	brom.player_said.connect(func(text): ui.say("You", text, true))
+	if scripted:
+		# A timestamped trace of the take, for checking a recording afterwards.
+		brom.character_said.connect(func(text): _trace("BROM: " + text))
+		brom.player_said.connect(func(text): _trace("PLAYER (recognised): " + text))
+		brom.action_called.connect(func(n, a, r): _trace("ACTION %s(%s) -> %s" % [n, JSON.stringify(a), r]))
+		brom.error_occurred.connect(func(c, m): _trace("ERROR %s %s" % [c, m]))
+		brom.conversation_ended.connect(func(r): _trace("ended: " + r))
 
 	_player_voice = AudioStreamPlayer.new()
 	add_child(_player_voice)
@@ -116,8 +125,14 @@ func _give_item(args: Dictionary) -> String:
 	return "Gave the %s. The player paid %d gold and has %d left." % [item, price, gold]
 
 
+func _trace(line: String) -> void:
+	print("[%6.2fs] %s" % [_t, line])
+
+
 func _on_state(state: LokutorAgent.State) -> void:
 	ui.set_state(state)
+	if scripted:
+		_trace("state: " + LokutorAgent.State.keys()[state])
 	if state == LokutorAgent.State.SPEAKING:
 		_spoke_at = _t
 
@@ -136,6 +151,12 @@ func _process(delta: float) -> void:
 	coal_light.light_energy = 1.6 + n * 0.6
 	if scripted:
 		_feed_player(delta)
+	if _recording:
+		# Movie Maker advances game time by a fixed step per frame and renders as fast as it can; the
+		# conversation is live, so hold each frame until the wall clock has caught up.
+		var lead := _t - (Time.get_ticks_usec() - _wall0) / 1000000.0
+		if lead > 0.0:
+			OS.delay_usec(int(lead * 1000000.0))
 
 
 # ---- The scripted player (video) --------------------------------------------------------------
@@ -152,14 +173,15 @@ func _run_script() -> void:
 	await _reply_done(0.0, 15.0)
 	for i in LINES:
 		await get_tree().create_timer(0.45).timeout
+		_trace("PLAYER (speaking): line %d" % (i + 1))
 		_start_line("res://demo/forge/lines/line%d.wav" % (i + 1))
 		while _line_playing:
 			await get_tree().process_frame
 		await _reply_done(_t, 25.0)
 	await get_tree().create_timer(1.2).timeout
+	brom.stop_conversation()
 	ui.show_end(CODE, "Give any character a voice", "lokutor.com")
 	await get_tree().create_timer(6.0).timeout
-	brom.stop_conversation()
 	get_tree().quit()
 
 
@@ -321,7 +343,7 @@ func _build_forge() -> void:
 	var at := Vector3(2.35, 0, -3.9)
 	_slab(Vector3(1.9, 1.15, 1.5), at + Vector3(0, 0.575, 0), stone)
 	_slab(Vector3(1.3, 0.55, 0.12), at + Vector3(0, 0.62, 0.72), _material(Color("120b08"), 1.0))
-	var coals := _material(Color("1a0802"), 0.9, 0.0, Color("ff3c08"), 1.15)
+	var coals := _material(Color("1a0802"), 0.9, 0.0, Color("ff2a00"), 0.55)
 	var embers_tex := NoiseTexture2D.new()
 	var nz := FastNoiseLite.new()
 	nz.frequency = 0.08
