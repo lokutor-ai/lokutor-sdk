@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.7.0] - 2026-10-20
+## [1.7.1] - 2026-10-20
+
+The same code as 1.7.0, which was staged on npm and never made public.
+
+## [1.7.0] - 2026-10-20 (not published)
 
 `ConversationalPanel` draws its own orb:
 
