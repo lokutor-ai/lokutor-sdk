@@ -16,6 +16,10 @@ export { BrowserAudioManager } from './browser-audio';
 export { NodeAudioManager } from './node-audio';
 export { ConversationalPanel, microphoneMessage } from './conversational-panel';
 export type { ConversationalPanelConfig } from './conversational-panel';
+export { PixelOrb, orbInks } from './pixel-orb';
+export type { OrbState } from './pixel-orb';
+export { AsciiField } from './ascii-field';
+export type { AsciiFieldOptions } from './ascii-field';
 export {
   pcm16ToFloat32,
   float32ToPcm16,

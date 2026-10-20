@@ -1,4 +1,6 @@
 import { requestMicrophone } from './browser-audio';
+import { PixelOrb } from './pixel-orb';
+import { AsciiField } from './ascii-field';
 
 const PANEL_CSS = /*css*/ `
   .cv-panel {
@@ -140,7 +142,9 @@ const PANEL_CSS = /*css*/ `
     align-items: center;
     justify-content: center;
     z-index: 10;
-    transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    /* Not width/height: a container that resizes would animate the box for half a second while the
+       canvas inside is redrawn at the new size at once, and the visualizer would swim. */
+    transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
   }
   .cv-canvas {
     width: 100% !important;
@@ -320,6 +324,49 @@ const PANEL_CSS = /*css*/ `
     .cv-btn { padding: clamp(0.35rem, 0.8cqw, 0.4rem) clamp(0.75rem, 1.2cqw, 1rem); font-size: clamp(0.75rem, 1.2cqw, 0.9rem); }
     .cv-error { padding: clamp(0.75rem, 1.5cqw, 1rem) clamp(1.5rem, 2cqw, 2rem); font-size: clamp(0.85rem, 1cqw, 1rem); }
   }
+
+  /* === THE ORB (the built-in PixelOrb, or any visualizer that idles) ===
+     One surface before, during and after a call: the agent waits as its orb, with the call button on
+     the orb's lower edge, and the call draws on the same orb, so nothing moves or swaps when it starts
+     or ends. */
+  .cv-panel.cv-orb { --cv-orb: clamp(96px, 46cqmin, 260px); box-shadow: none; }
+  .cv-orb .cv-texture {
+    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none;
+  }
+  .cv-orb .cv-curtain {
+    background: transparent; z-index: 30;
+    transition: opacity 0.35s ease, visibility 0s linear 0.35s;
+  }
+  .cv-orb .cv-curtain.is-up { transform: none; opacity: 0; visibility: hidden; }
+  .cv-orb .cv-curtain-bg, .cv-orb .cv-curtain-overlay,
+  .cv-orb .cv-curtain-title, .cv-orb .cv-curtain-desc { display: none; }
+  .cv-orb .cv-curtain-content {
+    position: absolute; left: 50%; top: calc(50% + var(--cv-orb) / 2 - 18px);
+    transform: translateX(-50%); padding: 0; gap: 0;
+  }
+  .cv-orb .cv-curtain-btn {
+    margin: 0; padding: 0.5rem 1.2rem; border-radius: 10px; gap: 0.4rem;
+    font-size: 0.8rem; font-family: inherit; white-space: nowrap;
+    background: var(--cv-btn-bg, #161311); color: var(--cv-btn-text, #fff);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  }
+  .cv-orb .cv-curtain-btn:hover { transform: scale(1.04); background: var(--cv-btn-bg, #161311); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2); }
+  .cv-orb .cv-curtain-btn svg { width: 14px; height: 14px; display: block; }
+  .cv-orb .cv-visualizer-wrap { width: var(--cv-orb); height: var(--cv-orb); transition: none; }
+  .cv-orb .cv-header {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+    padding: clamp(0.75rem, 3cqmin, 1.25rem) 1rem 0; text-align: center;
+  }
+  .cv-orb .cv-title {
+    justify-content: center; margin: 0; font-size: 0.8rem; font-weight: 600; letter-spacing: 0;
+    color: var(--cv-text-dim);
+  }
+  .cv-orb .cv-controls {
+    position: absolute; left: 0; right: 0; bottom: 0; margin: 0;
+    transition: opacity 0.35s ease, visibility 0s linear 0.35s;
+  }
+  .cv-orb:not(.cv-live) .cv-controls { opacity: 0; visibility: hidden; }
+  .cv-orb.cv-live .cv-controls { transition: opacity 0.35s ease; }
 `;
 
 let styleInjected = false;
@@ -345,7 +392,10 @@ export interface ConversationalPanelConfig {
   voice?: string;
   /** Language code (default: en) */
   language?: string;
-  /** Accent color for the sphere glow and highlights, e.g. '#e74c3b' */
+  /**
+   * The agent's colour, e.g. '#e74c3b'. The orb is drawn in it while the agent speaks, and in its
+   * opposite on the colour wheel while it is the caller's turn.
+   */
   accentColor?: string;
   /** Background color, e.g. '#0a0a0a' */
   backgroundColor?: string;
@@ -357,8 +407,18 @@ export interface ConversationalPanelConfig {
    * BrowserAudioManager as `microphone` so the call uses it instead of asking again later.
    */
   ConvoAgent: any;
-  /** Reference to the SphereVisualizer class */
-  SphereVisualizer: any;
+  /**
+   * The visualizer class. Leave it out to use the SDK's own orb (PixelOrb), drawn before, during and
+   * after the call. A class of your own is created with the call's canvas and driven through
+   * setAudioClient/setAccentColor/start/stop/resize; give it a static `idles = true` when it can draw
+   * with no call, and the panel shows it while waiting too.
+   */
+  SphereVisualizer?: any;
+  /**
+   * A faint drift of ASCII glyphs behind the orb, as on lokutor.com. Only with an idling visualizer
+   * (the default orb). Default false.
+   */
+  texture?: boolean;
   /** URL for the connecting sound asset */
   connectingSoundSrc?: string;
   /** Background image for the curtain, e.g. '/background_gradient.jpeg' */
@@ -390,6 +450,17 @@ export class ConversationalPanel {
   private container: HTMLElement;
   private agent: any = null;
   private visualizer: any = null;
+  // The visualizer class, and whether it idles: then one instance draws for the panel's whole life
+  // (waiting, the call, waiting again) instead of one per call behind a curtain.
+  private Visualizer: any;
+  private orbLook: boolean;
+  private texture: AsciiField | null = null;
+  // Stops the idling orb from drawing while the panel is off screen.
+  private visibility: IntersectionObserver | null = null;
+  private lightStage = false;
+  // Keeps the visualizer's canvas drawn at the size it is shown while the panel's container resizes
+  // (a window resize, a sidebar opening, a phone rotating), for the whole call, not only at its start.
+  private visualizerResize: ResizeObserver | null = null;
   private timerTicker: number | null = null;
   private connectingSound: HTMLAudioElement | null = null;
   private connectingFadeTimer: number | null = null;
@@ -435,8 +506,56 @@ export class ConversationalPanel {
     this.cfg = cfg;
     this.container = cfg.container;
     this.selectedVoice = cfg.voice || 'M1';
+    this.Visualizer = cfg.SphereVisualizer || PixelOrb;
+    this.orbLook = Boolean(this.Visualizer.idles);
     injectStyles();
     this.buildDOM();
+    if (this.orbLook) this.startIdling();
+  }
+
+  /** The orb look: the visualizer starts at once and waits, idling, until a call gives it a voice. */
+  private startIdling() {
+    this.el.classList.add('cv-orb');
+    if (this.cfg.texture) {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'cv-texture';
+      canvas.setAttribute('aria-hidden', 'true');
+      this.el.prepend(canvas);
+      try { this.texture = new AsciiField(canvas, this.textureStyle()); } catch { /* no WebGL: no texture */ }
+    }
+    try {
+      this.visualizer = new this.Visualizer(this.canvas);
+    } catch (err) {
+      console.error('ConversationalPanel visualizer error:', err);
+      return;
+    }
+    this.applyAccent();
+    if (typeof IntersectionObserver === 'undefined') {
+      this.visualizer.start();
+      return;
+    }
+    this.visibility = new IntersectionObserver(([entry]) => {
+      if (!this.visualizer) return;
+      if (entry.isIntersecting) this.visualizer.start();
+      else this.visualizer.stop();
+    });
+    this.visibility.observe(this.el);
+  }
+
+  private textureStyle() {
+    return this.lightStage
+      ? { color: [0.36, 0.32, 0.3] as [number, number, number], opacity: 0.16, cell: 12, density: 0.4 }
+      : { color: [1, 1, 1] as [number, number, number], opacity: 0.12, cell: 12, density: 0.4 };
+  }
+
+  private applyAccent() {
+    const hex = this.cfg.accentColor;
+    if (!hex || !/^#[0-9a-f]{6}$/i.test(hex) || typeof this.visualizer?.setAccentColor !== 'function') return;
+    this.visualizer.setAccentColor(
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255,
+    );
   }
 
   private buildDOM() {
@@ -552,28 +671,21 @@ export class ConversationalPanel {
     this.errorEl.classList.remove('is-visible');
     this.playConnectingSound();
 
-    // Freeze panel dimensions so content changes can't shift layout
-    const rect = this.container.getBoundingClientRect();
-    this.container.style.width = rect.width + 'px';
-    this.container.style.height = rect.height + 'px';
+    // The panel's size comes from its own CSS (aspect ratio and a height cap, children positioned
+    // inside it), so nothing that changes during a call can shift the layout. It used to be frozen here,
+    // in pixels, to its size at Start and never released: a call started in a wide window stayed that
+    // wide when the window narrowed, and the visualizer ended up outside the visible panel.
 
     try {
       const ConvoAgent = this.cfg.ConvoAgent;
-      const SphereVisualizer = this.cfg.SphereVisualizer;
 
-      const visualizer = new SphereVisualizer(this.canvas);
-      visualizer.resize(280, 280);
-      this.visualizer = visualizer;
-
-      // Pass accent color to the visualizer shader
-      if (this.cfg.accentColor && typeof visualizer.setAccentColor === 'function') {
-        const hex = this.cfg.accentColor;
-        visualizer.setAccentColor(
-          parseInt(hex.slice(1, 3), 16) / 255,
-          parseInt(hex.slice(3, 5), 16) / 255,
-          parseInt(hex.slice(5, 7), 16) / 255
-        );
+      // The orb is already drawing; a visualizer that does not idle gets a fresh instance per call.
+      if (!this.orbLook) {
+        this.visualizer = new this.Visualizer(this.canvas);
+        this.visualizer.resize(280, 280);
+        this.applyAccent();
       }
+      const visualizer = this.visualizer;
 
       const agentHandle = new ConvoAgent({
         apiKey: this.cfg.apiKey,
@@ -620,10 +732,13 @@ export class ConversationalPanel {
       });
 
       this.agent = agentHandle;
-      visualizer.setAudioClient(agentHandle);
+      // The waiting orb churns while the call connects, then follows the voices once it is live.
+      if (this.orbLook) visualizer?.setThinking?.(true);
+      else visualizer.setAudioClient(agentHandle);
 
       // Lift curtain immediately for responsive UI
       this.curtain.classList.add('is-up');
+      this.el.classList.add('cv-live');
       try { agentHandle.unlockAudioForMobile?.(); } catch (_) { /* ignore */ }
 
       const ok = await agentHandle.connect();
@@ -631,15 +746,18 @@ export class ConversationalPanel {
       if (!this.isRunning) return false;
       if (ok) {
         this.fadeOutConnectingSound();
-        // Resize canvas to container
-        const wrap = this.visualizerWrap;
-        if (wrap) {
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          const w = Math.floor(wrap.clientWidth * dpr);
-          const h = Math.floor(wrap.clientHeight * dpr);
-          visualizer.resize(w, h);
+        if (this.orbLook) {
+          // The orb keeps its own buffer at the size it is shown.
+          visualizer?.setThinking?.(false);
+          visualizer?.setAudioClient(agentHandle);
+        } else {
+          this.fitVisualizer();
+          if (typeof ResizeObserver !== 'undefined' && this.visualizerWrap) {
+            this.visualizerResize = new ResizeObserver(() => this.fitVisualizer());
+            this.visualizerResize.observe(this.visualizerWrap);
+          }
+          visualizer.start();
         }
-        visualizer.start();
         this.startTimer();
         this.onStart?.();
         if ((window as any).lucide) (window as any).lucide.createIcons();
@@ -664,9 +782,20 @@ export class ConversationalPanel {
     }
   }
 
+  /** Size the visualizer's canvas to its box, in device pixels, when the box has changed. */
+  private fitVisualizer() {
+    const wrap = this.visualizerWrap;
+    if (!wrap || !this.visualizer) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.floor(wrap.clientWidth * dpr);
+    const h = Math.floor(wrap.clientHeight * dpr);
+    if (w > 0 && h > 0 && (w !== this.canvas.width || h !== this.canvas.height)) this.visualizer.resize(w, h);
+  }
+
   /** Stop / disconnect the conversation */
   stop() {
-    if (!this.isRunning && !this.agent && !this.visualizer) return;
+    // The idling orb is there between calls too, so it does not mean a call is up.
+    if (!this.isRunning && !this.agent && !(this.visualizer && !this.orbLook)) return;
     this.isRunning = false;
     this.fadeOutConnectingSound();
     this.errorEl.classList.remove('is-visible');
@@ -682,8 +811,18 @@ export class ConversationalPanel {
     if (this.timerTicker) { clearInterval(this.timerTicker); this.timerTicker = null; }
     this.stopCountdown();
     this.setNote('');
-    if (this.visualizer) { this.visualizer.stop(); this.visualizer = null; }
+    this.visualizerResize?.disconnect();
+    this.visualizerResize = null;
+    if (this.visualizer && this.orbLook) {
+      // Back to waiting, on the same orb: no blank frame between the call and the wait.
+      this.visualizer.setThinking?.(false);
+      this.visualizer.setAudioClient(null);
+    } else if (this.visualizer) {
+      this.visualizer.stop();
+      this.visualizer = null;
+    }
     this.curtain.classList.remove('is-up');
+    this.el.classList.remove('cv-live');
     this.el.classList.remove('cv-is-speaking', 'cv-is-thinking');
     this.muteBtn.classList.remove('is-muted');
     const span = this.muteBtn.querySelector('span');
@@ -698,12 +837,7 @@ export class ConversationalPanel {
   setColor(color: string) {
     this.cfg.accentColor = color;
     this.container.style.setProperty('--cv-accent', color);
-    if (this.visualizer && typeof this.visualizer.setAccentColor === 'function') {
-      const r = parseInt(color.slice(1, 3), 16) / 255;
-      const g = parseInt(color.slice(3, 5), 16) / 255;
-      const b = parseInt(color.slice(5, 7), 16) / 255;
-      this.visualizer.setAccentColor(r, g, b);
-    }
+    this.applyAccent();
   }
 
   /** Update background color dynamically and ensure text/UI contrast */
@@ -735,6 +869,12 @@ export class ConversationalPanel {
     this.container.style.setProperty('--cv-text-dim', isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)');
     this.container.style.setProperty('--cv-ui-bg', isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)');
     this.container.style.setProperty('--cv-ui-border', isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)');
+    this.container.style.setProperty('--cv-btn-bg', isLight ? '#161311' : '#ffffff');
+    this.container.style.setProperty('--cv-btn-text', isLight ? '#ffffff' : '#161311');
+    this.lightStage = isLight;
+    // The orb and the texture pick their inks from the background they are drawn on.
+    this.visualizer?.refreshStage?.();
+    this.texture?.setStyle(this.textureStyle());
   }
 
   /** Update title text */
@@ -807,6 +947,12 @@ export class ConversationalPanel {
   /** Destroy the component, removing all DOM and stopping any active session */
   destroy() {
     this.stop();
+    this.visibility?.disconnect();
+    this.visibility = null;
+    this.visualizer?.stop();
+    this.visualizer = null;
+    this.texture?.destroy();
+    this.texture = null;
     this.el.remove();
   }
 

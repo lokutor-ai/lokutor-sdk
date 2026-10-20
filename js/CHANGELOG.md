@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [1.7.0] - 2026-10-20
+
+`ConversationalPanel` draws its own orb:
+
+- New `PixelOrb`, the panel's visualizer when `SphereVisualizer` is left out (the option is now optional):
+  a lit ball in dithered pixels whose stains flow at the pace of whoever is speaking. It is drawn in the
+  `accentColor` while the agent speaks and in the opposite colour on the wheel while it is the caller's
+  turn, so whose turn it is shows at a glance; with no call it waits in the accent. Light or dark inks
+  follow the panel's `backgroundColor`. lokutor.com and the Lokutor dashboard draw the same orb.
+- With an idling visualizer (`PixelOrb`, or any class with a static `idles = true`), the panel is one
+  surface before, during and after a call: the orb waits with the Start button on its lower edge, churns
+  while the call connects, and the call draws on that same orb, so nothing moves, swaps or goes blank when
+  a call starts or ends. It stops drawing while the panel is off screen. A visualizer you pass that does
+  not idle keeps the previous behaviour exactly (accent curtain, one instance per call).
+- New `texture` option: a faint drift of ASCII glyphs behind the orb (`AsciiField`, also exported).
+- `orbInks()` exported for pages that draw the orb's colours elsewhere.
+
+The panel follows its container through a call:
+
+- The container is no longer frozen, in pixels, to its size at Start. A call started in a wide window
+  stayed that wide when the window narrowed, and the visualizer ended up outside the visible panel.
+- The visualizer's canvas is resized whenever its box changes during the call (a `ResizeObserver` on the
+  visualizer's wrapper), not only once at Start, so it is never drawn squashed or stretched; the wrapper
+  no longer animates its width and height on a resize.
 ## [1.6.1] - 2026-10-20
 
 The microphone is downsampled properly before recognition:
