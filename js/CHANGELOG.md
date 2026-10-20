@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1] - 2026-10-20
+
+The microphone is downsampled properly before recognition:
+
+- `StreamResampler` (which `BrowserAudioManager` uses to take the microphone's rate down to 16 kHz)
+  low-passes before it downsamples: a 63-tap Blackman-windowed sinc at 0.45 x the output rate (7.2 kHz
+  for 16 kHz), then linear interpolation, with the filter's history and the resampling phase carried
+  across blocks. It used linear interpolation alone, so everything the microphone heard between 8 and
+  24 kHz folded back into the speech band the recogniser listens to: a 12 kHz tone at 48 kHz came out at
+  4 kHz at full amplitude. It now comes out 85 dB down (92 dB from 44.1 kHz); a 1 kHz tone keeps its
+  amplitude. Same filter as the lokutor.com speech-to-text demo.
+- From 44.1 kHz the output no longer depends on how the audio was split into blocks. The fractional
+  resampling phase was dropped at every block, so the timeline jumped by up to one input sample per
+  block and ran fast (19 extra samples per 3 s with 1024-sample blocks); it now equals the whole-signal
+  output exactly, at 48 and 44.1 kHz.
+- The filter delays the signal by 31 input samples (0.65 ms at 48 kHz) and costs about 0.06 ms per
+  4096-sample block at 48 kHz (0.14 ms at 44.1 kHz) on an Apple M-series core, under 0.2% of real time.
+- `process(chunk, true)` (flush) ends the stream when downsampling: it drains the filter with silence,
+  returns the rest, and the resampler starts over. Upsampling and equal rates are unchanged.
+
 ## [1.6.0] - 2026-10-18
 
 Protocol fixes, each checked against what the server sends (lokutor_tts pkg/api):
