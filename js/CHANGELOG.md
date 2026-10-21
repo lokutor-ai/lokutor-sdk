@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-21
+
+- Custom vocabulary: `keyterms` on `STTClient.transcribe()` and `SpeechToTextClient`, names, brands and terms to
+  write your way when what is heard is close (up to 100; send `language` too). Sent as a list in JSON and in
+  `/ws/stt`'s first message, and as one comma-separated field with a file upload. https://docs.lokutor.com/guides/custom-vocabulary
+
 ## [1.7.1] - 2026-10-20
 
 The same code as 1.7.0, which was staged on npm and never made public.

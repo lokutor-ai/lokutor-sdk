@@ -1130,6 +1130,7 @@ export class STTClient {
       form.append('audio', options.audio, 'audio.wav');
       if (options.language) form.append('language', options.language);
       if (options.sampleRate) form.append('sample_rate', String(options.sampleRate));
+      if (options.keyterms?.length) form.append('keyterms', options.keyterms.join(','));
       res = await fetch(url, {
         method: 'POST',
         headers: { 'X-API-Key': this.apiKey },
@@ -1147,6 +1148,7 @@ export class STTClient {
           format: options.format || 'pcm16',
           sample_rate: options.sampleRate,
           language: options.language,
+          ...(options.keyterms?.length ? { keyterms: options.keyterms } : {}),
         }),
       });
     }
@@ -1184,6 +1186,7 @@ export class SpeechToTextClient {
   private serverUrl: string;
   private language?: Language;
   private vad: 'silero' | 'rms';
+  private keyterms?: string[];
   private onPartialTranscript?: (text: string) => void;
   private onFinalTranscript?: (text: string) => void;
   private onError?: (error: LokutorError) => void;
@@ -1198,6 +1201,7 @@ export class SpeechToTextClient {
     this.serverUrl = config.serverUrl || DEFAULT_URLS.STT;
     this.language = config.language;
     this.vad = config.vad || 'silero';
+    this.keyterms = config.keyterms;
     this.onPartialTranscript = config.onPartialTranscript;
     this.onFinalTranscript = config.onFinalTranscript;
     this.onError = config.onError;
@@ -1232,7 +1236,8 @@ export class SpeechToTextClient {
         this.ws.onopen = async () => {
           this.isConnected = true;
           this.onStatusChange?.('connected');
-          this.ws!.send(JSON.stringify({ language: this.language || Language.ENGLISH, vad: this.vad }));
+          this.ws!.send(JSON.stringify({ language: this.language || Language.ENGLISH, vad: this.vad,
+            ...(this.keyterms?.length ? { keyterms: this.keyterms } : {}) }));
 
           // A denied or missing microphone rejects instead of leaving connect() pending forever (the
           // same hang 1.5.1 fixed in VoiceAgentClient).

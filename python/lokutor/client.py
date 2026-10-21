@@ -14,7 +14,7 @@ import threading
 import urllib.request
 import urllib.error
 from threading import Thread, Event
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import websocket
 
@@ -644,12 +644,16 @@ class STTClient:
         sample_rate: Optional[int] = None,
         language: Optional[Language] = None,
         timeout: float = 30.0,
+        keyterms: Optional[List[str]] = None,
     ) -> dict:
         """
         Transcribe a complete audio clip.
 
         :param audio: Raw audio bytes — a full WAV file (format="wav") or raw
             PCM16 samples (format="pcm16", sample_rate required).
+        :param keyterms: custom vocabulary, names and terms to write your way when
+            what is heard is close (up to 100; needs language).
+            https://docs.lokutor.com/guides/custom-vocabulary
         :returns: dict with keys text, latency_ms, engine, sample_rate,
             language, duration_seconds, and optionally segments.
         """
@@ -661,6 +665,8 @@ class STTClient:
             body["sample_rate"] = sample_rate
         if language is not None:
             body["language"] = _val(language)
+        if keyterms:
+            body["keyterms"] = list(keyterms)
 
         req = urllib.request.Request(
             self.transcribe_url,
@@ -696,11 +702,13 @@ class SpeechToTextClient:
         on_partial_transcript: Optional[Callable[[str], None]] = None,
         on_final_transcript: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
+        keyterms: Optional[List[str]] = None,
     ):
         self.api_key = api_key
         self.server_url = server_url
         self.language = language
         self.vad = vad
+        self.keyterms = list(keyterms) if keyterms else None
         self.on_partial_transcript = on_partial_transcript
         self.on_final_transcript = on_final_transcript
         self.on_error = on_error
@@ -715,7 +723,10 @@ class SpeechToTextClient:
         self.running = True
 
         def on_open(ws):
-            ws.send(json.dumps({"language": _val(self.language), "vad": self.vad}))
+            first = {"language": _val(self.language), "vad": self.vad}
+            if self.keyterms:
+                first["keyterms"] = self.keyterms
+            ws.send(json.dumps(first))
             self.audio.start_input()
             self._mic_thread = Thread(target=self._mic_loop, daemon=True)
             self._mic_thread.start()

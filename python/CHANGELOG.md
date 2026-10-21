@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-10-21
+
+- Custom vocabulary: `keyterms` on `STTClient.transcribe()` and `SpeechToTextClient(...)`, names, brands and terms
+  to write your way when what is heard is close (up to 100; send `language` too).
+  https://docs.lokutor.com/guides/custom-vocabulary
+
 ## [1.5.0] - 2026-10-18
 
 - `on_tool_call(name, args, call_id)`: the call id is passed, so `submit_tool_result(call_id, ...)` can be

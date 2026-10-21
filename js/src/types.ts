@@ -162,6 +162,9 @@ export interface TranscribeOptions {
   /** Set when passing a raw PCM16 buffer instead of a WAV Blob. */
   format?: 'wav' | 'pcm16';
   language?: Language;
+  /** Custom vocabulary: names, brands and terms to write your way when what is heard is close (up to 100 of
+   *  64 characters; needs `language`). https://docs.lokutor.com/guides/custom-vocabulary */
+  keyterms?: string[];
 }
 
 /** One transcribed segment with timing, when the engine provides them. */
@@ -195,6 +198,9 @@ export interface SpeechToTextOptions {
   language?: Language;
   /** VAD engine: "silero" (default, neural) or "rms" (energy-threshold fallback). */
   vad?: 'silero' | 'rms';
+  /** Custom vocabulary for this stream, applied to partial and final transcripts (up to 100 terms).
+   *  https://docs.lokutor.com/guides/custom-vocabulary */
+  keyterms?: string[];
   /** Fires repeatedly while the user is mid-utterance, with the best partial guess so far. */
   onPartialTranscript?: (text: string) => void;
   /** Fires once VAD detects the utterance ended. */

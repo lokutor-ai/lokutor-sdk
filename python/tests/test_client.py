@@ -158,3 +158,41 @@ class TestProtocolFixes(unittest.TestCase):
             TTSClient(api_key="k")  # used to raise: the audio device was opened in the constructor
             client = self._client()
             client.disconnect()  # stopping audio that never started must not need pyaudio either
+
+
+class TestKeyterms(unittest.TestCase):
+    """Custom vocabulary reaches POST /stt/transcribe and /ws/stt's first message as the API takes it."""
+
+    def _post(self, **kw):
+        from lokutor.client import STTClient
+        sent = {}
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"text": "hola"}'
+
+        def fake_urlopen(req, timeout=None):
+            sent["body"] = json.loads(req.data.decode("utf-8"))
+            return Resp()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            STTClient("k").transcribe(b"\x00" * 3200, format="pcm16", sample_rate=16000, language="es", **kw)
+        return sent["body"]
+
+    def test_transcribe_sends_keyterms(self):
+        self.assertEqual(self._post(keyterms=["Etxeberria", "Invisalign"])["keyterms"], ["Etxeberria", "Invisalign"])
+
+    def test_transcribe_without_keyterms_sends_none(self):
+        self.assertNotIn("keyterms", self._post())
+        self.assertNotIn("keyterms", self._post(keyterms=[]))
+
+    def test_stream_first_message_has_keyterms(self):
+        from lokutor.client import SpeechToTextClient
+        c = SpeechToTextClient("k", language="es", keyterms=["Etxeberria"])
+        self.assertEqual(c.keyterms, ["Etxeberria"])
