@@ -163,7 +163,7 @@ export interface TranscribeOptions {
   format?: 'wav' | 'pcm16';
   language?: Language;
   /** Custom vocabulary: names, brands and terms to write your way when what is heard is close (up to 100 of
-   *  64 characters; needs `language`). https://docs.lokutor.com/guides/custom-vocabulary */
+   *  40 characters; needs `language`). https://docs.lokutor.com/guides/custom-vocabulary */
   keyterms?: string[];
 }
 
