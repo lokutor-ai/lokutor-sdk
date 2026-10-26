@@ -11,7 +11,7 @@ Official JavaScript/TypeScript SDK for [Lokutor AI](https://lokutor.com), provid
 
 - ⚡ **Ultra-low latency**: Optimized WebSocket streaming for real-time interactions.
 - 🗣️ **Conversational Intelligence**: Integrated STT, LLM, and TTS with VAD and barge-in support.
-- 🌍 **Multi-lingual**: English, Spanish, Catalan, Galician, Basque, Portuguese, French, Italian and German (Catalan, Galician and Basque are speak-only: no speech recognition yet).
+- 🌍 **Multi-lingual**: English, Spanish, Catalan, Galician, Basque, Portuguese, French, Italian and German (a voice agent listens and answers in all nine).
 - 🎨 **Natural Voices**: Multiple high-quality male and female voice styles.
 - 💻 **TypeScript First**: Full type definitions included.
 
