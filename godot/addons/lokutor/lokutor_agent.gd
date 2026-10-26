@@ -31,7 +31,8 @@ enum MicMode { ALWAYS, PUSH_TO_TALK, OFF }
 @export_multiline var persona: String = "You are a friendly villager in a fantasy town. Answer in one or two short sentences."
 ## F1-F5 (female) or M1-M5 (male), or a voice id from the Lokutor dashboard.
 @export var voice: String = "F1"
-## en, es, fr, pt, ca, gl, eu...
+## en, es, fr, pt, ca, gl, eu... or "auto": the character follows the language the player speaks.
+## Empty = the default ("en"; a dashboard agent keeps its own).
 @export var language: String = "en"
 ## Start talking as soon as the scene starts. Off: call start_conversation() (e.g. when the player walks up).
 @export var start_on_ready: bool = true
@@ -252,7 +253,7 @@ func _send_config() -> void:
 	if voice != "" or not dashboard:
 		_send({"type": "voice", "data": voice if voice != "" else "F1"})
 	if language != "" or not dashboard:
-		_send({"type": "language", "data": language if language != "" else "en"})
+		_send({"type": "language", "data": "" if language == "auto" else (language if language != "" else "en")})
 	_send_tools()
 	_send({"type": "visemes", "data": false})
 	if persona != "" or not dashboard:

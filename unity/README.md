@@ -22,7 +22,7 @@ https://github.com/lokutor-ai/lokutor-sdk.git?path=/unity
 4. Press **Play** and talk. Headphones recommended.
 
 That's it. The character greets the player, listens, and answers in the voice you picked
-(`F1`-`F5`, `M1`-`M5`, or a voice from your dashboard) and language (`en`, `es`, `fr`, `pt`, ...).
+(`F1`-`F5`, `M1`-`M5`, or a voice from your dashboard) and language (`en`, `es`, `fr`, `pt`, ...). Set the language to `auto` and the character answers in whichever language the player speaks.
 
 Or import the **Talking blacksmith** sample (Package Manager > Lokutor Voice Agents > Samples): add its
 script to an empty GameObject, paste your key, press Play.

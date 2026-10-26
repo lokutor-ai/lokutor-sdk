@@ -61,7 +61,7 @@ namespace Lokutor
         [Tooltip("F1-F5 (female) or M1-M5 (male), or a voice id from the Lokutor dashboard.")]
         public string voice = "F1";
 
-        [Tooltip("en, es, fr, pt, ca, gl, eu...")]
+        [Tooltip("en, es, fr, pt, ca, gl, eu... or auto: the character follows the language the player speaks.")]
         public string language = "en";
 
         [Tooltip("Start talking as soon as the scene starts. Off: call StartConversation() (e.g. when the player walks up).")]

@@ -564,10 +564,10 @@ describe('Docs: Error Handling', () => {
 });
 
 describe('Docs: Version History', () => {
-  it('SDK version is 1.8.0', () => {
+  it('SDK version is 1.9.0', () => {
     // This test documents the current version in docs
     // If version changes, update both docs and this test
     const pkg = require('../../package.json');
-    expect(pkg.version).toBe('1.8.0');
+    expect(pkg.version).toBe('1.9.0');
   });
 });

@@ -30,6 +30,7 @@ static class UnitTests
         Run("Session: an action runs and answers the server", SessionAction);
         Run("Session: unknown action and a throwing handler still answer", SessionActionErrors);
         Run("Session: errors and visemes", SessionErrorsAndVisemes);
+        Run("Session: language unset = en, auto or empty = follow the player", ConfigLanguageRules);
         Console.WriteLine($"unit tests: {passed} checks passed, {failed} failed");
         return failed == 0;
     }
@@ -270,6 +271,16 @@ static class UnitTests
         Check(seen.SequenceEqual(new[] { "state:Ready", "partial:hel", "player:hello", "agent:Welcome!", "cut:Welcome", "limit:180" }),
               "delivered in order on Update(): " + string.Join(", ", seen));
         Check(s.SessionId == "agent_1", "session id kept");
+    }
+
+    static void ConfigLanguageRules()
+    {
+        Check(LokutorSession.ConfigLanguage(null, false) == "en", "unset -> en");
+        Check(LokutorSession.ConfigLanguage(null, true) == null, "unset on a dashboard agent -> nothing sent");
+        Check(LokutorSession.ConfigLanguage("auto", false) == "", "auto -> empty");
+        Check(LokutorSession.ConfigLanguage("", false) == "", "empty -> empty");
+        Check(LokutorSession.ConfigLanguage("auto", true) == "", "auto on a dashboard agent -> empty");
+        Check(LokutorSession.ConfigLanguage("ca", false) == "ca", "named language unchanged");
     }
 
     static void SessionAction()

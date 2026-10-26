@@ -2,6 +2,8 @@ import {
   VoiceStyle,
   VoiceId,
   Language,
+  LanguageOption,
+  languageToWire,
   DEFAULT_URLS,
   LokutorConfig,
   SynthesizeOptions,
@@ -185,7 +187,8 @@ export class VoiceAgentClient {
   private agentId: string = "";
   public prompt: string;
   public voice: VoiceId;
-  public language: Language;
+  /** `''` = the agent follows the caller's language (`language: 'auto'`). */
+  public language: Language | '';
   public tools: ToolDefinition[] = [];
 
   // Callbacks
@@ -230,7 +233,7 @@ export class VoiceAgentClient {
     /** Required unless agentId is set (a dashboard agent brings its own prompt). */
     prompt?: string,
     voice?: VoiceId,
-    language?: Language,
+    language?: LanguageOption,
     visemes?: boolean,
     onVisemes?: (visemes: Viseme[]) => void,
     enableAudio?: boolean,
@@ -250,7 +253,8 @@ export class VoiceAgentClient {
     // call's own language family (esca_f1 for Spanish, en_f1 for English), which adapts better
     // than pinning one explicit voice here would.
     this.voice = config.voice || VoiceStyle.F1;
-    this.language = config.language || Language.ENGLISH;
+    // Omitted = English; an explicit '' or 'auto' stays '' so the server follows the caller.
+    this.language = config.language === undefined ? Language.ENGLISH : languageToWire(config.language);
     this.serverUrl = config.serverUrl || DEFAULT_URLS.VOICE_AGENT;
 
     this.onTranscription = config.onTranscription;
@@ -883,12 +887,12 @@ export class VoiceAgentClient {
   /**
    * Change the language mid-conversation
    */
-  public updateLanguage(language: Language) {
-    this.language = language;
+  public updateLanguage(language: LanguageOption) {
+    this.language = languageToWire(language);
     this.languageExplicit = true;
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isConnected) {
-      this.ws.send(JSON.stringify({ type: 'language', data: language }));
-      console.log(`⚙️ Updated language: ${language}`);
+      this.ws.send(JSON.stringify({ type: 'language', data: this.language }));
+      console.log(`⚙️ Updated language: ${this.language || 'auto'}`);
     }
   }
 

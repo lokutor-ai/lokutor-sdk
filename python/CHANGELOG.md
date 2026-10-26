@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- `VoiceAgentClient(language="auto")` (or `""`) sends `{"type":"language","data":""}`: the agent follows the
+  caller's language. Omitting `language` is unchanged (`Language.ENGLISH`).
+
 ## [1.6.0] - 2026-10-21
 
 - Custom vocabulary: `keyterms` on `STTClient.transcribe()` and `SpeechToTextClient(...)`, names, brands and terms

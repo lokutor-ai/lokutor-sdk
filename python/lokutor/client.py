@@ -14,7 +14,7 @@ import threading
 import urllib.request
 import urllib.error
 from threading import Thread, Event
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import websocket
 
@@ -206,7 +206,7 @@ class VoiceAgentClient:
         api_key: str,
         prompt: str = "You are a helpful AI assistant",
         voice: VoiceStyle = VoiceStyle.F1,
-        language: Language = Language.ENGLISH,
+        language: Union[Language, str] = Language.ENGLISH,
         visemes: bool = False,
         tools: Optional[list] = None,
         on_transcription: Optional[Callable[[str], None]] = None,
@@ -220,7 +220,8 @@ class VoiceAgentClient:
         self.api_key = api_key
         self.prompt = prompt
         self.voice = voice
-        self.language = language
+        # "auto" (or "") sends language "": the agent follows the caller's language.
+        self.language = "" if _val(language) in ("auto", "") else language
         self.server_url = DEFAULT_VOICE_AGENT_URL
         self.want_visemes = visemes
 

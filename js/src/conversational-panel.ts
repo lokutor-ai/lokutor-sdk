@@ -1,6 +1,7 @@
 import { requestMicrophone } from './browser-audio';
 import { PixelOrb } from './pixel-orb';
 import { AsciiField } from './ascii-field';
+import { languageToWire, type LanguageOption } from './types';
 
 const PANEL_CSS = /*css*/ `
   .cv-panel {
@@ -390,7 +391,7 @@ export interface ConversationalPanelConfig {
   prompt?: string;
   /** Voice style identifier (default: M1) */
   voice?: string;
-  /** Language code (default: en) */
+  /** Language code (default: en). `'auto'` (or `''`) lets the agent follow the caller's language. */
   language?: string;
   /**
    * The agent's colour, e.g. '#e74c3b'. The orb is drawn in it while the agent speaks, and in its
@@ -692,7 +693,7 @@ export class ConversationalPanel {
         tools: this.cfg.tools,
         prompt: this.cfg.prompt,
         voice: this.selectedVoice,
-        language: this.cfg.language || 'en',
+        language: this.cfg.language === undefined ? 'en' : languageToWire(this.cfg.language as LanguageOption),
         onStatusChange: (status: string) => {
           this.el.classList.remove('cv-is-speaking', 'cv-is-thinking');
           if (status === 'speaking') this.el.classList.add('cv-is-speaking');

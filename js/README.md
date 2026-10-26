@@ -90,6 +90,18 @@ await agent.connect();
 To run an agent you configured in the dashboard, pass `agentId` and leave out `prompt`, `voice` and
 `language`: only what you set explicitly overrides the agent.
 
+### Follow the caller's language
+
+Omit `language` and the agent speaks English (or the dashboard agent's own language). Pass
+`language: 'auto'` (or `''`) and the agent follows the caller: the server detects the caller's language,
+keeps it for short replies, and the agent answers and speaks in it. It works the same on
+`ConversationalPanel` and `updateLanguage('auto')`.
+
+```typescript
+const agent = new VoiceAgentClient({ apiKey, prompt: 'You are a helpful assistant.', language: 'auto' });
+// AUTO_LANGUAGE is the same value, typed: language: AUTO_LANGUAGE
+```
+
 ## Hardware Compatibility
 
 This SDK is platform-agnostic and works in both **Node.js** (22 or newer, for the global `WebSocket`) and **Browser** environments. 

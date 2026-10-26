@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-26
+
+- `language: 'auto'` (or `''`) on `VoiceAgentClient`, `ConversationalPanel` and `updateLanguage()` sends
+  `{"type":"language","data":""}`, so the agent follows the caller's language. Before, an empty language was
+  turned into `'en'` by the client and the panel. Omitting `language` is unchanged (`'en'`; with `agentId`,
+  the agent's own). New exports: `AUTO_LANGUAGE`, `LanguageOption`, `languageToWire()`. `client.language`
+  can now be `''`. TTS and STT clients are unchanged.
+
 ## [1.8.0] - 2026-10-21
 
 - Custom vocabulary: `keyterms` on `STTClient.transcribe()` and `SpeechToTextClient`, names, brands and terms to

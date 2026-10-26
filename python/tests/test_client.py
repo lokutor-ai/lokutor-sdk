@@ -151,6 +151,22 @@ class TestProtocolFixes(unittest.TestCase):
         first = json.loads(ws.send.call_args_list[0].args[0])
         self.assertEqual(first, {"type": "voice", "data": "clone_abc"})
 
+    def _sent_language(self, **kw):
+        ws = MagicMock()
+        self._client(**kw)._on_open(ws)
+        msgs = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+        return [m["data"] for m in msgs if m["type"] == "language"]
+
+    def test_language_omitted_keeps_default(self):
+        self.assertEqual(self._sent_language(), ["en"])
+
+    def test_language_auto_or_empty_sends_empty_string(self):
+        self.assertEqual(self._sent_language(language="auto"), [""])
+        self.assertEqual(self._sent_language(language=""), [""])
+
+    def test_named_language_unchanged(self):
+        self.assertEqual(self._sent_language(language=Language.CATALAN), ["ca"])
+
     def test_clients_construct_without_pyaudio(self):
         import lokutor.client as c
         with patch.object(c, "pyaudio", None):

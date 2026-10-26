@@ -91,6 +91,21 @@ export enum Language {
 }
 
 /**
+ * Pass `'auto'` (or `''`) as a voice agent's language to let the agent follow the caller: the server
+ * detects the caller's language, keeps it for short replies, and the agent answers and speaks in it.
+ * Omit `language` for the default (`'en'`; with `agentId`, the agent's own).
+ */
+export const AUTO_LANGUAGE = 'auto';
+
+/** A language for a voice agent: a {@link Language}, or `'auto'` / `''` to follow the caller. */
+export type LanguageOption = Language | typeof AUTO_LANGUAGE | '';
+
+/** The value the voice-agent protocol carries: `'auto'` and `''` are both `""`; anything else is unchanged. */
+export function languageToWire(language: LanguageOption): Language | '' {
+  return language === AUTO_LANGUAGE || language === '' ? '' : language;
+}
+
+/**
  * Audio configuration constants
  */
 export const AUDIO_CONFIG = {

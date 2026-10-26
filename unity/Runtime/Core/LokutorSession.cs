@@ -82,7 +82,11 @@ namespace Lokutor
         /// <summary>"F1".."F5", "M1".."M5" (a vetted speaker in the call's language) or a voice id from GET /voices.</summary>
         public string Voice;
 
-        /// <summary>"en", "es", "fr", "pt", "ca", "gl", "eu", ...</summary>
+        /// <summary>
+        /// "en", "es", "fr", "pt", "ca", "gl", "eu", ... or "auto" (or ""): the character follows the player's
+        /// language, answering in whichever one the player speaks. null = the default ("en"; a dashboard
+        /// agent keeps its own).
+        /// </summary>
         public string Language;
 
         /// <summary>Also receive per-character timings for lip-sync (VisemesReceived).</summary>
@@ -246,14 +250,24 @@ namespace Lokutor
             SendConfig();
         }
 
+        /// <summary>
+        /// The language to send at connect, or null to send none. null (not set) is "en", or the dashboard
+        /// agent's own; "auto" and "" are sent as "", which makes the character follow the player's language.
+        /// </summary>
+        public static string ConfigLanguage(string language, bool dashboardAgent)
+        {
+            if (language == null) return dashboardAgent ? null : "en";
+            return language == "auto" ? "" : language;
+        }
+
         void SendConfig()
         {
             bool dashboardAgent = !string.IsNullOrEmpty(options.AgentId);
             // A dashboard agent keeps its own voice, language and prompt unless the game overrides them.
             if (!string.IsNullOrEmpty(options.Voice)) SendJson(Msg("voice", options.Voice));
             else if (!dashboardAgent) SendJson(Msg("voice", "F1"));
-            if (!string.IsNullOrEmpty(options.Language)) SendJson(Msg("language", options.Language));
-            else if (!dashboardAgent) SendJson(Msg("language", "en"));
+            var language = ConfigLanguage(options.Language, dashboardAgent);
+            if (language != null) SendJson(Msg("language", language));
             SendTools();
             SendJson(Msg("visemes", options.Visemes));
             if (!string.IsNullOrEmpty(options.Persona)) SendJson(Msg("prompt", options.Persona));
