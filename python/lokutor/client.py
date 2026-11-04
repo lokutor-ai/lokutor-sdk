@@ -26,8 +26,15 @@ import websocket
 # convenience, does; it checks for None and raises a clear, actionable error there.
 try:
     import pyaudio
-except ImportError:
+except Exception:  # ImportError, or a broken build that fails at import (e.g. a Windows wheel)
     pyaudio = None
+
+# sounddevice ships PortAudio inside its wheels (Windows, macOS, Linux), so it installs without a
+# compiler. Same optional treatment as pyaudio: pip install lokutor[sounddevice]
+try:
+    import sounddevice
+except Exception:
+    sounddevice = None
 
 import inspect
 
@@ -50,16 +57,19 @@ def _call_flexible(cb, *args):
 
 
 class _LazyAudioIO:
-    """Opens the local audio device only when audio is actually played or recorded, so clients used
-    without a speaker or microphone (synthesize to bytes, transcribe a file, play=False) work without
-    pyaudio. Stopping audio that was never started is a no-op."""
+    """Opens the audio backend only when audio is actually played or recorded, so clients used
+    without a speaker or microphone (synthesize to bytes, transcribe a file, play=False) work
+    without pyaudio or sounddevice. Stopping audio that was never started is a no-op.
 
-    def __init__(self):
-        self._io = None
+    `io` is an optional object with start_input/start_output/read/write/clear_output/
+    wait_until_finished/stop (see QueueAudioIO): your own audio stream, with no local device."""
+
+    def __init__(self, io=None):
+        self._io = io
 
     def _get(self):
         if self._io is None:
-            self._io = _AudioIO()
+            self._io = _default_audio_io()
         return self._io
 
     def stop(self):
@@ -184,6 +194,119 @@ class _AudioIO:
         self.pa.terminate()
 
 
+class _SoundDeviceIO(_AudioIO):
+    """The same background-playback device layer on sounddevice (PortAudio bundled in its wheels)."""
+    def __init__(self):
+        if sounddevice is None:
+            raise ImportError(
+                "Local microphone/speaker audio needs 'sounddevice' or 'pyaudio'. "
+                "Install with: pip install lokutor[sounddevice]"
+            )
+        self.in_stream = None
+        self.out_stream = None
+        self.playback_queue = queue.Queue()
+        self.stop_playback = Event()
+        self.playback_thread = None
+
+    def start_input(self):
+        self.in_stream = sounddevice.RawInputStream(
+            samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16", blocksize=CHUNK_SIZE
+        )
+        self.in_stream.start()
+
+    def start_output(self):
+        self.out_stream = sounddevice.RawOutputStream(
+            samplerate=SPEAKER_SAMPLE_RATE, channels=CHANNELS, dtype="int16"
+        )
+        self.out_stream.start()
+        self.stop_playback.clear()
+        self.playback_thread = Thread(target=self._playback_loop, daemon=True)
+        self.playback_thread.start()
+
+    def read(self):
+        if not self.in_stream:
+            return None
+        data, _overflowed = self.in_stream.read(CHUNK_SIZE)
+        return bytes(data)
+
+    def stop(self):
+        self.stop_playback.set()
+        if self.playback_thread:
+            self.playback_thread.join(timeout=1.0)
+        for s in [self.in_stream, self.out_stream]:
+            if s:
+                try:
+                    s.stop()
+                    s.close()
+                except Exception:
+                    pass
+
+
+class QueueAudioIO:
+    """No local audio device: audio goes through your own code.
+
+    Output (the agent's / TTS speech, 16-bit mono PCM) is handed to `on_audio(bytes)` as it arrives,
+    and `clear_output()` calls `on_clear()` when the caller interrupts (drop what you have buffered).
+    Input is whatever you feed to `send_audio(pcm_bytes)` (16-bit mono PCM at SAMPLE_RATE): a
+    LiveKit track, a browser stream, a file. Pass it as `audio_io=QueueAudioIO(...)`.
+    """
+    def __init__(self, on_audio=None, on_clear=None):
+        self.on_audio = on_audio
+        self.on_clear = on_clear
+        self._in = queue.Queue()
+        self._closed = Event()
+
+    def start_input(self):
+        self._closed.clear()
+
+    def start_output(self):
+        pass
+
+    def send_audio(self, pcm: bytes):
+        self._in.put(pcm)
+
+    def read(self):
+        while not self._closed.is_set():
+            try:
+                return self._in.get(timeout=0.1)
+            except queue.Empty:
+                continue
+        return None
+
+    def write(self, data):
+        if self.on_audio:
+            self.on_audio(data)
+
+    def clear_output(self):
+        if self.on_clear:
+            self.on_clear()
+
+    def wait_until_finished(self):
+        pass
+
+    def stop(self):
+        self._closed.set()
+
+
+def _default_audio_io():
+    """pyaudio if it works, else sounddevice. LOKUTOR_AUDIO_BACKEND=sounddevice|pyaudio forces one."""
+    forced = os.environ.get("LOKUTOR_AUDIO_BACKEND", "").strip().lower()
+    order = [forced] if forced in ("pyaudio", "sounddevice") else ["pyaudio", "sounddevice"]
+    errors = []
+    for name in order:
+        try:
+            if name == "pyaudio":
+                return _AudioIO()
+            return _SoundDeviceIO()
+        except Exception as e:  # missing, or installed but broken on this machine
+            errors.append(f"{name}: {e}")
+    raise ImportError(
+        "No local audio backend works (" + "; ".join(errors) + "). "
+        "Install one with: pip install lokutor[sounddevice] (no compiler needed), or pass "
+        "audio_io=QueueAudioIO(...) to use your own audio stream with no local device."
+    )
+
+
 class VoiceAgentClient:
     """
     High-level client for voice conversations with Lokutor AI Agent
@@ -216,6 +339,7 @@ class VoiceAgentClient:
         on_tool_call: Optional[Callable[[str, str], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
+        audio_io=None,
     ):
         self.api_key = api_key
         self.prompt = prompt
@@ -238,7 +362,7 @@ class VoiceAgentClient:
         self.connected = Event()
         self.config_done = Event()
         self.running = False
-        self.audio = _LazyAudioIO()
+        self.audio = _LazyAudioIO(audio_io)
         self.tools = tools or []
         self.current_generation = 0
 
@@ -308,6 +432,10 @@ class VoiceAgentClient:
             self.ws.close()
         self.audio.stop()
         logger.info("Disconnected")
+
+    def send_audio(self, pcm: bytes):
+        """Feed 16-bit mono PCM (16 kHz) when using audio_io=QueueAudioIO(): your own input stream."""
+        self.audio.send_audio(pcm)
 
     def update_prompt(self, new_prompt: str):
         self.prompt = new_prompt
@@ -531,10 +659,10 @@ class TTSClient:
     """
     Client for standalone Text-to-Speech synthesis
     """
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, audio_io=None):
         self.api_key = api_key
         self.server_url = DEFAULT_TTS_URL
-        self.audio = _LazyAudioIO()
+        self.audio = _LazyAudioIO(audio_io)
 
     def synthesize(
         self,
@@ -704,6 +832,7 @@ class SpeechToTextClient:
         on_final_transcript: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         keyterms: Optional[List[str]] = None,
+        audio_io=None,
     ):
         self.api_key = api_key
         self.server_url = server_url
@@ -714,7 +843,7 @@ class SpeechToTextClient:
         self.on_final_transcript = on_final_transcript
         self.on_error = on_error
 
-        self.audio = _LazyAudioIO()
+        self.audio = _LazyAudioIO(audio_io)
         self.ws: Optional[websocket.WebSocketApp] = None
         self.running = False
         self._mic_thread: Optional[Thread] = None
@@ -780,6 +909,10 @@ class SpeechToTextClient:
                     self.ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
                 except Exception as e:
                     logger.error(f"Error sending audio: {e}")
+
+    def send_audio(self, pcm: bytes):
+        """Feed 16-bit mono PCM (16 kHz) when using audio_io=QueueAudioIO(): your own input stream."""
+        self.audio.send_audio(pcm)
 
     def end_utterance(self):
         """Force-finalize whatever utterance is currently in progress."""

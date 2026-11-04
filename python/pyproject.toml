@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lokutor"
-version = "1.6.0"
+version = "1.7.0"
 authors = [
   { name="Lokutor", email="support@lokutor.com" },
 ]
@@ -36,6 +36,11 @@ dependencies = [
 # you already have) does not need it. pip install lokutor[audio]
 audio = [
     "pyaudio>=0.2.13",
+]
+# Same, on sounddevice: PortAudio ships inside its wheels, so it installs on Windows without a
+# compiler. pip install lokutor[sounddevice]
+sounddevice = [
+    "sounddevice>=0.4.6",
 ]
 dev = [
     "pytest>=6.0",

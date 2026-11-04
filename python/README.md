@@ -32,7 +32,7 @@ cd sdk/python
 pip install -e .
 ```
 
-Requires `PyAudio` and `websocket-client`.
+Local microphone/speakers need `sounddevice` (`pip install lokutor[sounddevice]`, no compiler needed, works on Windows) or `PyAudio` (`lokutor[audio]`); the SDK uses whichever works. Without any, pass your own audio stream (see below).
 
 ## Quick Start
 
@@ -158,6 +158,20 @@ client.synthesize(
 
 ### Connection Issues
 The SDK connects to `wss://api.lokutor.com`. Ensure you have an active internet connection and a valid API key. If you encounter authentication errors, double-check your credentials in the [Lokutor Dashboard](https://lokutor.com/dashboard).
+
+### No local audio device / your own audio stream
+```python
+from lokutor import VoiceAgentClient, QueueAudioIO
+
+io = QueueAudioIO(on_audio=lambda pcm: play(pcm),   # agent speech, 16-bit mono PCM
+                  on_clear=lambda: flush_playback())  # the caller interrupted
+client = VoiceAgentClient(api_key="...", prompt="...", audio_io=io)
+# from your own capture thread (16-bit mono PCM, 16 kHz):
+client.send_audio(pcm_bytes)
+client.start_conversation()
+```
+`TTSClient(api_key, audio_io=...)` and `SpeechToTextClient(..., audio_io=...)` take the same. Set
+`LOKUTOR_AUDIO_BACKEND=sounddevice` (or `pyaudio`) to force a backend.
 
 ### PyAudio Installation
 If you encounter issues installing `pyaudio`, you may need to install portaudio first:

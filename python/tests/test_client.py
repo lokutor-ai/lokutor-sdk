@@ -212,3 +212,58 @@ class TestKeyterms(unittest.TestCase):
         from lokutor.client import SpeechToTextClient
         c = SpeechToTextClient("k", language="es", keyterms=["Etxeberria"])
         self.assertEqual(c.keyterms, ["Etxeberria"])
+
+
+class TestAudioBackends(unittest.TestCase):
+    """PyAudio is optional: sounddevice takes over when it is missing or broken, or you bring your own audio."""
+
+    def test_falls_back_to_sounddevice_when_pyaudio_is_broken(self):
+        import lokutor.client as c
+        fake_sd = MagicMock()
+        with patch.object(c, "pyaudio", MagicMock(PyAudio=MagicMock(side_effect=OSError("PY_SSIZE_T_CLEAN")))), \
+                patch.object(c, "sounddevice", fake_sd):
+            io = c._default_audio_io()
+        self.assertIsInstance(io, c._SoundDeviceIO)
+
+    def test_no_backend_error_names_the_way_out(self):
+        import lokutor.client as c
+        with patch.object(c, "pyaudio", None), patch.object(c, "sounddevice", None):
+            with self.assertRaises(ImportError) as cm:
+                c._default_audio_io()
+        self.assertIn("lokutor[sounddevice]", str(cm.exception))
+        self.assertIn("QueueAudioIO", str(cm.exception))
+
+    def test_forced_backend(self):
+        import lokutor.client as c
+        with patch.dict("os.environ", {"LOKUTOR_AUDIO_BACKEND": "sounddevice"}), \
+                patch.object(c, "sounddevice", MagicMock()), patch.object(c, "pyaudio", MagicMock()):
+            self.assertIsInstance(c._default_audio_io(), c._SoundDeviceIO)
+
+    def test_sounddevice_streams(self):
+        import lokutor.client as c
+        fake_sd = MagicMock()
+        fake_sd.RawInputStream.return_value.read.return_value = (b"\x01\x00" * 4, False)
+        with patch.object(c, "sounddevice", fake_sd):
+            io = c._SoundDeviceIO()
+            io.start_input()
+            self.assertEqual(io.read(), b"\x01\x00" * 4)
+            io.start_output()
+            io.write(b"\x00\x00")
+            io.wait_until_finished()
+            io.stop()
+        fake_sd.RawOutputStream.return_value.write.assert_called_with(b"\x00\x00")
+
+    def test_custom_audio_io_gets_speech_and_feeds_microphone(self):
+        from lokutor import TTSClient, VoiceAgentClient, QueueAudioIO
+        got, cleared = [], []
+        io = QueueAudioIO(on_audio=got.append, on_clear=lambda: cleared.append(1))
+        client = VoiceAgentClient(api_key="k", audio_io=io)
+        client._on_message(None, b"\x02\x00")
+        client.audio.clear_output()
+        self.assertEqual(got, [b"\x02\x00"])
+        self.assertEqual(cleared, [1])
+        client.send_audio(b"\x03\x00")
+        self.assertEqual(io.read(), b"\x03\x00")
+        io.stop()
+        self.assertIsNone(io.read())
+        self.assertIs(TTSClient(api_key="k", audio_io=io).audio._io, io)

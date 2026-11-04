@@ -15,7 +15,7 @@ class TestSDKLogic(unittest.TestCase):
         self.api_key = "test-key"
         self.prompt = "test-prompt"
 
-    @patch('lokutor.client.pyaudio.PyAudio')
+    @patch('lokutor.client._default_audio_io')
     @patch('lokutor.client.websocket.WebSocketApp')
     def test_voice_agent_init(self, mock_ws, mock_pa):
         client = VoiceAgentClient(
@@ -29,7 +29,7 @@ class TestSDKLogic(unittest.TestCase):
         self.assertEqual(client.voice, VoiceStyle.F1)
         self.assertEqual(client.language, Language.ENGLISH)
 
-    @patch('lokutor.client.pyaudio.PyAudio')
+    @patch('lokutor.client._default_audio_io')
     @patch('lokutor.client.websocket.WebSocketApp')
     def test_voice_agent_on_open(self, mock_ws_app, mock_pa):
         client = VoiceAgentClient(api_key=self.api_key, prompt=self.prompt)
@@ -44,7 +44,7 @@ class TestSDKLogic(unittest.TestCase):
         self.assertTrue(any(msg.get("type") == "voice" and msg.get("data") == VoiceStyle.F1.value for msg in sent_messages))
         self.assertTrue(any(msg.get("type") == "language" and msg.get("data") == Language.ENGLISH.value for msg in sent_messages))
 
-    @patch('lokutor.client.pyaudio.PyAudio')
+    @patch('lokutor.client._default_audio_io')
     @patch('lokutor.client.websocket.WebSocketApp')
     def test_voice_agent_on_message_binary(self, mock_ws_app, mock_pa):
         client = VoiceAgentClient(api_key=self.api_key, prompt=self.prompt)
@@ -55,7 +55,7 @@ class TestSDKLogic(unittest.TestCase):
         
         client.audio.write.assert_called_with(test_audio)
 
-    @patch('lokutor.client.pyaudio.PyAudio')
+    @patch('lokutor.client._default_audio_io')
     @patch('lokutor.client.websocket.WebSocketApp')
     def test_voice_agent_on_message_transcript(self, mock_ws_app, mock_pa):
         on_transcription = MagicMock()
@@ -77,7 +77,7 @@ class TestSDKLogic(unittest.TestCase):
         client._on_message(None, msg_agent)
         on_response.assert_called_with("hi there")
 
-    @patch('lokutor.client.pyaudio.PyAudio')
+    @patch('lokutor.client._default_audio_io')
     @patch('lokutor.client.websocket.WebSocketApp')
     @patch('lokutor.client.Thread')
     def test_tts_client_synthesize(self, mock_thread, mock_ws_app, mock_pa):

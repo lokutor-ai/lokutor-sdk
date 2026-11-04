@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-04
+
+- Local audio no longer needs PyAudio. `pip install lokutor[sounddevice]` (PortAudio is bundled in its wheels,
+  no compiler on Windows) and the SDK uses it automatically when PyAudio is missing or fails to load (for
+  example the `PY_SSIZE_T_CLEAN` error of old PyAudio builds on Python 3.10+). `LOKUTOR_AUDIO_BACKEND=sounddevice`
+  (or `pyaudio`) forces one.
+- `audio_io=` on `VoiceAgentClient`, `TTSClient` and `SpeechToTextClient`: your own audio stream with no local
+  device. `QueueAudioIO(on_audio=..., on_clear=...)` hands the speech to your callback and takes microphone
+  PCM through `client.send_audio(pcm)` (16-bit mono, 16 kHz), e.g. to bridge a LiveKit track.
+
 - `VoiceAgentClient(language="auto")` (or `""`) sends `{"type":"language","data":""}`: the agent follows the
   caller's language. Omitting `language` is unchanged (`Language.ENGLISH`).
 
