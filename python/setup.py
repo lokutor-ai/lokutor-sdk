@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="lokutor",
-    version="1.7.0",
+    version="1.8.0",
     description="Official Python SDK for Lokutor - Real-time AI voice and TTS",
     long_description=long_description,
     long_description_content_type="text/markdown",

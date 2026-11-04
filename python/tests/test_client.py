@@ -267,3 +267,84 @@ class TestAudioBackends(unittest.TestCase):
         io.stop()
         self.assertIsNone(io.read())
         self.assertIs(TTSClient(api_key="k", audio_io=io).audio._io, io)
+
+
+class TestBringYourOwnLLM(unittest.TestCase):
+    def test_llm_is_sent_before_the_first_turn_is_released(self):
+        client = VoiceAgentClient(api_key="k", llm={"base_url": "https://agent.example.com/v1", "model": "m", "tools": "none"})
+        ws = MagicMock()
+        client._on_open(ws)
+        sent = [json.loads(c[0][0]) for c in ws.send.call_args_list]
+        types = [m["type"] for m in sent]
+        self.assertIn("llm", types)
+        self.assertLess(types.index("llm"), types.index("rates"))
+        self.assertEqual(sent[types.index("llm")]["data"]["base_url"], "https://agent.example.com/v1")
+
+    def test_no_llm_message_by_default(self):
+        client = VoiceAgentClient(api_key="k")
+        ws = MagicMock()
+        client._on_open(ws)
+        self.assertNotIn("llm", [json.loads(c[0][0])["type"] for c in ws.send.call_args_list])
+
+
+class TestClientSideModel(unittest.TestCase):
+    def _run(self, handler, request):
+        import time
+        client = VoiceAgentClient(api_key="k", on_llm_request=handler)
+        ws = MagicMock()
+        client._on_open(ws)
+        sent_open = [json.loads(c[0][0]) for c in ws.send.call_args_list]
+        llm = [m for m in sent_open if m["type"] == "llm"][0]["data"]
+        ws.send.reset_mock()
+        client._on_message(ws, json.dumps(dict(request, type="llm_request", request_id="r1")))
+        for _ in range(100):
+            if any(json.loads(c[0][0])["type"] in ("llm_done", "llm_error") for c in ws.send.call_args_list):
+                break
+            time.sleep(0.01)
+        return llm, [json.loads(c[0][0]) for c in ws.send.call_args_list]
+
+    def test_streams_a_generators_text_then_done(self):
+        def handler(messages, tools):
+            yield "Hola, "
+            yield "Ana."
+        llm, out = self._run(handler, {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(llm, {"mode": "client", "tools": "auto"})
+        self.assertEqual([m["type"] for m in out], ["llm_chunk", "llm_chunk", "llm_done"])
+        self.assertEqual("".join(m.get("data", "") for m in out), "Hola, Ana.")
+        self.assertTrue(all(m["request_id"] == "r1" for m in out))
+
+    def test_a_tool_call_and_a_plain_string(self):
+        _, out = self._run(lambda m, t: [{"name": "book", "arguments": {"n": 1}}], {"messages": []})
+        self.assertEqual(out[0]["type"], "llm_tool_call")
+        self.assertEqual(json.loads(out[0]["arguments"]), {"n": 1})
+        _, out = self._run(lambda m, t: "listo", {"messages": []})
+        self.assertEqual([m["type"] for m in out], ["llm_chunk", "llm_done"])
+
+    def test_a_failing_handler_reports_instead_of_hanging(self):
+        def boom(m, t):
+            raise RuntimeError("graph exploded")
+        _, out = self._run(boom, {"messages": []})
+        self.assertEqual(out[-1]["type"], "llm_error")
+        self.assertIn("graph exploded", out[-1]["data"])
+
+    def test_cancel_stops_the_generator(self):
+        import time
+        ws = MagicMock()
+        client = VoiceAgentClient(api_key="k", on_llm_request=None)
+        started = []
+
+        def slow(m, t):
+            for i in range(50):
+                started.append(i)
+                time.sleep(0.02)
+                yield f"w{i} "
+        client.on_llm_request = slow
+        client._on_message(ws, json.dumps({"type": "llm_request", "request_id": "r2", "messages": []}))
+        time.sleep(0.1)
+        client._on_message(ws, json.dumps({"type": "llm_cancel", "request_id": "r2"}))
+        time.sleep(0.15)
+        n = len(started)
+        time.sleep(0.15)
+        self.assertEqual(len(started), n, "the generator must stop being consumed")
+        sent = [json.loads(c[0][0])["type"] for c in ws.send.call_args_list]
+        self.assertNotIn("llm_done", sent)

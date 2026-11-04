@@ -340,6 +340,9 @@ class VoiceAgentClient:
         on_status: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         audio_io=None,
+        llm: Optional[dict] = None,
+        on_llm_request: Optional[Callable[[list, list], object]] = None,
+        llm_tools: str = "auto",
     ):
         self.api_key = api_key
         self.prompt = prompt
@@ -363,6 +366,20 @@ class VoiceAgentClient:
         self.config_done = Event()
         self.running = False
         self.audio = _LazyAudioIO(audio_io)
+        # Your own language model for this session: an OpenAI-compatible endpoint (a LangGraph server, LiteLLM,
+        # vLLM, your own service). {"base_url": "https://...", "api_key": "...", "model": "...",
+        # "headers": {...}, "tools": "auto" | "none"}. Lokutor keeps recognition, turn-taking, speech and tool
+        # execution; the endpoint is the intelligence. See docs.lokutor.com/guides/bring-your-own-llm.
+        self.llm = llm
+        # Your model runs HERE, in this process, so it can be a LangGraph in the same program, a private
+        # network, a laptop: nothing has to be reachable from outside. on_llm_request(messages, tools) gets
+        # the conversation (OpenAI chat messages, the first one Lokutor's system prompt) and returns the
+        # reply: a string, or a generator yielding strings as they are produced (Lokutor starts speaking at
+        # the first sentence). To use one of the agent's tools, yield {"name": ..., "arguments": {...}}; the
+        # next call carries the result as a "tool" message. llm_tools="none" never sends tools.
+        self.on_llm_request = on_llm_request
+        self.llm_tools = llm_tools
+        self._llm_cancel = {}
         self.tools = tools or []
         self.current_generation = 0
 
@@ -533,6 +550,10 @@ class VoiceAgentClient:
             if self.tools:
                 ws.send(json.dumps({"type": "tools", "data": self.tools}))
             ws.send(json.dumps({"type": "visemes", "data": self.want_visemes}))
+            if self.llm:
+                ws.send(json.dumps({"type": "llm", "data": self.llm}))
+            elif self.on_llm_request:
+                ws.send(json.dumps({"type": "llm", "data": {"mode": "client", "tools": self.llm_tools}}))
             ws.send(json.dumps({"type": "prompt", "data": self.prompt}))
             # Last: the server releases the first turn on "rates", once the whole config has arrived.
             ws.send(json.dumps({"type": "rates", "playback": 44100, "input": 16000}))
@@ -555,6 +576,15 @@ class VoiceAgentClient:
             if isinstance(message, str):
                 msg = json.loads(message)
                 msg_type = msg.get("type")
+
+                if msg_type == "llm_request":
+                    self._serve_llm_request(ws, msg)
+                    return
+                if msg_type == "llm_cancel":
+                    ev = self._llm_cancel.get(msg.get("request_id"))
+                    if ev:
+                        ev.set()
+                    return
 
                 if msg_type == "audio":
                     gen = msg.get("generation", 0)
@@ -638,6 +668,49 @@ class VoiceAgentClient:
 
         except Exception as e:
             logger.error(f"Message handling error: {e}")
+
+    def _serve_llm_request(self, ws, req):
+        """Answer one llm_request on its own thread, so the audio loop never waits on the model."""
+        rid = req.get("request_id")
+        handler = self.on_llm_request
+        cancel = Event()
+        self._llm_cancel[rid] = cancel
+
+        def send(m):
+            m["request_id"] = rid
+            ws.send(json.dumps(m))
+
+        def run():
+            try:
+                if handler is None:
+                    send({"type": "llm_error", "data": "no on_llm_request handler"})
+                    return
+                out = handler(req.get("messages", []), req.get("tools") or [])
+                if isinstance(out, (str, dict)):
+                    out = [out]
+                for item in out:
+                    if cancel.is_set():
+                        break
+                    if isinstance(item, dict):
+                        args = item.get("arguments", {})
+                        send({"type": "llm_tool_call", "id": item.get("id") or f"call_{rid}_{item.get('name')}",
+                              "name": item.get("name"), "arguments": args if isinstance(args, str) else json.dumps(args)})
+                    elif item:
+                        send({"type": "llm_chunk", "data": str(item)})
+                if hasattr(out, "close"):
+                    out.close()
+                if not cancel.is_set():
+                    send({"type": "llm_done"})
+            except Exception as e:  # the turn gets no reply, and the server logs why
+                logger.error(f"on_llm_request failed: {e}")
+                try:
+                    send({"type": "llm_error", "data": str(e)[:300]})
+                except Exception:
+                    pass
+            finally:
+                self._llm_cancel.pop(rid, None)
+
+        Thread(target=run, daemon=True).start()
 
     def _on_error(self, ws, error):
         logger.error(f"WebSocket error: {error}")

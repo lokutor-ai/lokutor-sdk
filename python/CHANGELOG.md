@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-04
+
+- Bring your own LLM or agent (https://docs.lokutor.com/guides/bring-your-own-llm). `VoiceAgentClient(on_llm_request=fn)`:
+  your model runs in this process (a LangGraph, a private network, a laptop); `fn(messages, tools)` returns the reply
+  as a string or a generator, and is told to stop when the caller interrupts. `VoiceAgentClient(llm={...})`: point the
+  session at your own public https OpenAI-compatible endpoint instead. `llm_tools="none"` sends none of the agent's
+  tools. Examples: `examples/custom_llm_client.py`, `examples/custom_llm_server.py`.
+
 ## [1.7.0] - 2026-11-04
 
 - Local audio no longer needs PyAudio. `pip install lokutor[sounddevice]` (PortAudio is bundled in its wheels,
