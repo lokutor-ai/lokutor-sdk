@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-04
+
+- Bring your own LLM or agent (https://docs.lokutor.com/guides/bring-your-own-llm). `onLlmRequest(messages, tools, signal)`
+  on `VoiceAgentClient`: your model runs in this process (a LangGraph, a private network, a laptop), returns the reply
+  as a string or an (async) iterable, and `signal` aborts when the caller interrupts. `llm: { baseUrl, apiKey, model,
+  headers, tools }`: point the session at your own public https OpenAI-compatible endpoint instead. `llmTools: 'none'`
+  sends none of the agent's tools. New types: `CustomLLMConfig`, `LlmRequestHandler`, `LlmReplyPart`.
+
 ## [1.9.0] - 2026-10-26
 
 - `language: 'auto'` (or `''`) on `VoiceAgentClient`, `ConversationalPanel` and `updateLanguage()` sends

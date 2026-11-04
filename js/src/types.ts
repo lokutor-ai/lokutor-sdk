@@ -238,6 +238,43 @@ export interface BrowserAudioOptions {
 }
 
 /**
+ * Your own language model for a voice agent session: an OpenAI-compatible chat completions endpoint (a
+ * LangGraph server, LiteLLM, vLLM, a service of your own on any cloud). Lokutor keeps recognition,
+ * turn-taking, speech and tool execution; the endpoint is the intelligence.
+ * https://docs.lokutor.com/guides/bring-your-own-llm
+ */
+export interface CustomLLMConfig {
+  /** Public https URL: the chat completions URL, or the API base ("https://host/v1"). */
+  baseUrl: string;
+  /** Sent as "Authorization: Bearer ..." unless `headers` carries an Authorization. Optional. */
+  apiKey?: string;
+  /** The "model" field of the request. Optional: omitted when your endpoint does not need one. */
+  model?: string;
+  /** Extra request headers (at most 10), e.g. a tenant id. */
+  headers?: Record<string, string>;
+  /** "auto" (default): the agent's tools are sent as OpenAI `tools`. "none": never sent; your agent runs its own tools. */
+  tools?: 'auto' | 'none';
+  /** Start replies during the caller's pause. Off by default for your endpoint: unused replies would be requests to it. */
+  speculativeLlm?: boolean;
+}
+
+/** A piece of a client-side model's reply: text, or one of the agent's tools to call. */
+export type LlmReplyPart = string | { name: string; arguments?: unknown; id?: string };
+
+/**
+ * Your model runs in this process (client mode): called with each conversation (OpenAI chat messages, the
+ * first one Lokutor's system prompt) and the agent's tools; return the reply as a string or yield it as it is
+ * produced (Lokutor starts speaking at the first sentence). `signal` aborts when the caller speaks over the
+ * reply. Nothing has to be reachable from outside, so it can be a LangGraph in the same program, a private
+ * network, a laptop. https://docs.lokutor.com/guides/bring-your-own-llm
+ */
+export type LlmRequestHandler = (
+  messages: Array<{ role: string; content?: string | null; [k: string]: unknown }>,
+  tools: ToolDefinition[],
+  signal: AbortSignal,
+) => LlmReplyPart | Iterable<LlmReplyPart> | AsyncIterable<LlmReplyPart> | Promise<LlmReplyPart | Iterable<LlmReplyPart> | AsyncIterable<LlmReplyPart>>;
+
+/**
  * Voice agent conversation options
  */
 export interface VoiceAgentOptions {

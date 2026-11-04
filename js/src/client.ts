@@ -22,6 +22,9 @@ import {
   TranscribeOptions,
   TranscribeResult,
   SpeechToTextOptions,
+  CustomLLMConfig,
+  LlmRequestHandler,
+  LlmReplyPart,
 } from './types';
 import { BrowserAudioManager } from './browser-audio';
 
@@ -203,6 +206,10 @@ export class VoiceAgentClient {
   private messages: Array<{ role: 'user' | 'agent'; text: string; timestamp: number }> = [];
   private visemeListeners: ((visemes: Viseme[]) => void)[] = [];
   private wantVisemes: boolean = false;
+  private llm?: CustomLLMConfig;
+  private onLlmRequest?: LlmRequestHandler;
+  private llmTools: 'auto' | 'none' = 'auto';
+  private llmAborts = new Map<string, AbortController>();
 
   private audioManager: AudioManager | null = null;
   private enableAudio: boolean = false;
@@ -239,6 +246,12 @@ export class VoiceAgentClient {
     enableAudio?: boolean,
     tools?: ToolDefinition[],
     serverUrl?: string,
+    /** Your own OpenAI-compatible language model for this session. Do not put a secret key in browser code: configure it on the agent instead, or keep it behind your own gateway. */
+    llm?: CustomLLMConfig,
+    /** Your model runs in this process: answer each conversation Lokutor sends (see LlmRequestHandler). */
+    onLlmRequest?: LlmRequestHandler,
+    /** "none": the agent's tools are never sent to onLlmRequest (it runs its own). Default "auto". */
+    llmTools?: 'auto' | 'none',
   }) {
     this.apiKey = config.apiKey || "";
     this.authProvider = config.auth;
@@ -264,6 +277,9 @@ export class VoiceAgentClient {
     this.onStatus = config.onStatus;
     this.onError = config.onError;
     this.wantVisemes = config.visemes || false;
+    this.llm = config.llm;
+    this.onLlmRequest = config.onLlmRequest;
+    this.llmTools = config.llmTools ?? 'auto';
     this.enableAudio = config.enableAudio ?? false;
     this.tools = config.tools || [];
   }
@@ -507,6 +523,13 @@ export class VoiceAgentClient {
       this.ws.send(JSON.stringify({ type: 'tools', data: this.tools }));
     }
     this.ws.send(JSON.stringify({ type: 'visemes', data: this.wantVisemes }));
+    if (!this.llm && this.onLlmRequest) {
+      this.ws.send(JSON.stringify({ type: 'llm', data: { mode: 'client', tools: this.llmTools } }));
+    }
+    if (this.llm) {
+      const { baseUrl, apiKey, model, headers, tools, speculativeLlm } = this.llm;
+      this.ws.send(JSON.stringify({ type: 'llm', data: { base_url: baseUrl, api_key: apiKey, model, headers, tools, speculative_llm: speculativeLlm } }));
+    }
     if (!agentSession || this.prompt) this.ws.send(JSON.stringify({ type: 'prompt', data: this.prompt }));
 
     // Inform the server of our sample rates for echo cancellation.
@@ -666,6 +689,12 @@ export class VoiceAgentClient {
           break;
         }
 
+        case 'llm_request':
+          void this.serveLlmRequest(msg);
+          break;
+        case 'llm_cancel':
+          this.llmAborts.get(msg.request_id)?.abort();
+          break;
         case 'tool_call': {
           // Once, with the call_id submitToolResult needs. It was emitted twice (the first time
           // without call_id), so a handler ran every tool twice and its first result was dropped.
@@ -678,6 +707,49 @@ export class VoiceAgentClient {
     } catch (e) {
       sdkTrace('ws.recv.parse_error', { preview: text?.slice(0, 120) });
       console.debug('Failed to parse message:', e);
+    }
+  }
+
+  /**
+   * Answer one llm_request with the caller's onLlmRequest, streaming the reply back. Runs beside the audio
+   * loop, never in it; an error is reported to the server (the turn gets no reply and the server logs why).
+   */
+  private async serveLlmRequest(req: { request_id: string; messages?: any[]; tools?: any[] }) {
+    const id = req.request_id;
+    const abort = new AbortController();
+    this.llmAborts.set(id, abort);
+    const send = (m: Record<string, unknown>) => {
+      if (this.ws && this.isConnected) this.ws.send(JSON.stringify({ ...m, request_id: id }));
+    };
+    try {
+      if (!this.onLlmRequest) {
+        send({ type: 'llm_error', data: 'no onLlmRequest handler' });
+        return;
+      }
+      const out = await this.onLlmRequest(req.messages ?? [], req.tools ?? [], abort.signal);
+      const emit = (part: LlmReplyPart) => {
+        if (typeof part === 'string') {
+          if (part) send({ type: 'llm_chunk', data: part });
+        } else if (part && typeof part === 'object' && part.name) {
+          const args = part.arguments;
+          send({ type: 'llm_tool_call', id: part.id ?? `call_${id}_${part.name}`, name: part.name,
+            arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}) });
+        }
+      };
+      if (typeof out === 'string' || (out && typeof out === 'object' && !(Symbol.asyncIterator in out) && !(Symbol.iterator in out))) {
+        emit(out as LlmReplyPart);
+      } else {
+        for await (const part of out as AsyncIterable<LlmReplyPart>) {
+          if (abort.signal.aborted) break;
+          emit(part);
+        }
+      }
+      if (!abort.signal.aborted) send({ type: 'llm_done' });
+    } catch (e: any) {
+      console.error('onLlmRequest failed:', e);
+      send({ type: 'llm_error', data: String(e?.message ?? e).slice(0, 300) });
+    } finally {
+      this.llmAborts.delete(id);
     }
   }
 
