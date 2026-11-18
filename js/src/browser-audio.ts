@@ -422,11 +422,14 @@ export class BrowserAudioManager {
     const currentTime = this.audioContext.currentTime;
     const duration = audioBuffer.length / this.outputSampleRate;
 
-    // Schedule playback to occur seamlessly after previous audio
-    const startTime = Math.max(
-      currentTime + 0.01, // Minimum 10ms delay
-      this.nextPlaybackTime
-    );
+    // Schedule playback to occur seamlessly after previous audio. The first chunk of a reply (nothing
+    // queued) waits 40 ms, not 10: it holds only ~46 ms of speech and the next arrives ~20-30 ms after it
+    // (measured on a real call, 2026-11-18), so at 10 ms a browser busy starting the call handled the
+    // second chunk late and the reply's first word came out broken. 40 ms starts it with ~115 ms in hand.
+    const idle = this.nextPlaybackTime <= currentTime;
+    const startTime = idle
+      ? currentTime + 0.04
+      : Math.max(currentTime + 0.01, this.nextPlaybackTime);
     this.nextPlaybackTime = startTime + duration;
 
     // Create and configure source node
