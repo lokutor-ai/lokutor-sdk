@@ -1,11 +1,10 @@
-// The engine-independent part of the Lokutor game SDK: one voice conversation with one character
-// over the Lokutor voice-agent WebSocket (wss://api.lokutor.com/ws/agent). No UnityEngine
+// The engine-independent part of the Lokutor game SDK: one voice conversation with one character,
+// on top of VoiceAgentClient. It knows what the character is doing, keeps its voice until the engine
+// plays it, runs the game's actions, and decides when the microphone is open. No UnityEngine
 // references, so it builds and is tested with plain .NET; LokutorAgent (Unity) is a thin layer on top.
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,24 +25,39 @@ namespace Lokutor
         Speaking,
     }
 
-    public sealed class LokutorError
-    {
-        public string Code { get; }
-        public string Message { get; }
-        public LokutorError(string code, string message) { Code = code ?? "error"; Message = message ?? ""; }
-        public override string ToString() => Code + ": " + Message;
-    }
-
-    /// <summary>A mouth shape, coarse enough to map onto any rig's blend shapes or sprites.</summary>
+    /// <summary>A mouth shape, coarse enough to map onto any sprite set. LipSync uses the 15 visemes themselves.</summary>
     public enum MouthShape { Rest, A, E, I, O, U, MBP, FV, L, S, Other }
 
-    /// <summary>When a character of the reply is spoken, from the start of that reply's audio.</summary>
+    /// <summary>A viseme with the names it had before 0.2. <see cref="Viseme"/> is what LipSync takes.</summary>
     public struct VisemeMark
     {
         public float Time;
+        public float Duration;
+        /// <summary>Its id, 0-14.</summary>
+        public int Id;
+        /// <summary>Its name in LokutorApi.Visemes.</summary>
+        public string Name;
+        /// <summary>The first letter of its name.</summary>
         public char Char;
         public MouthShape Shape;
 
+        static readonly MouthShape[] Shapes =
+        {
+            MouthShape.Rest, MouthShape.MBP, MouthShape.FV, MouthShape.L, MouthShape.L, MouthShape.Other, MouthShape.S, MouthShape.S,
+            MouthShape.L, MouthShape.Other, MouthShape.A, MouthShape.E, MouthShape.I, MouthShape.O, MouthShape.U,
+        };
+
+        internal VisemeMark(Viseme v)
+        {
+            Time = v.T;
+            Duration = v.D;
+            Id = v.V;
+            Name = v.C;
+            Char = string.IsNullOrEmpty(v.C) ? ' ' : v.C[0];
+            Shape = Shapes[v.V];
+        }
+
+        /// <summary>The mouth of a letter.</summary>
         public static MouthShape ShapeFor(char c)
         {
             switch (char.ToLowerInvariant(c))
@@ -69,7 +83,8 @@ namespace Lokutor
 
         /// <summary>
         /// Returns a short-lived ticket minted by YOUR backend (POST https://api.lokutor.com/ws-ticket with
-        /// the API key), so the key never ships inside the game. Called before every connect.
+        /// the API key), so the key never ships inside the game. Called before every connect, on the thread
+        /// that calls ConnectAsync, or Update when a dropped connection is opened again.
         /// </summary>
         public Func<Task<string>> TicketProvider;
 
@@ -78,6 +93,9 @@ namespace Lokutor
 
         /// <summary>Who the character is and how it talks (the system prompt).</summary>
         public string Persona;
+
+        /// <summary>The line above what SetContext tells the character. Write it in the language of the persona.</summary>
+        public string ContextHeading = "Right now in the game:";
 
         /// <summary>"F1".."F5", "M1".."M5" (a vetted speaker in the call's language) or a voice id from GET /voices.</summary>
         public string Voice;
@@ -89,8 +107,20 @@ namespace Lokutor
         /// </summary>
         public string Language;
 
-        /// <summary>Also receive per-character timings for lip-sync (VisemesReceived).</summary>
-        public bool Visemes;
+        /// <summary>Shifts the voice up or down: small creatures, giants.</summary>
+        public float Pitch;
+
+        /// <summary>Receive the mouth shapes of the voice, for lip sync.</summary>
+        public bool Visemes = true;
+
+        /// <summary>Your own OpenAI-compatible language model.</summary>
+        public CustomLLMConfig Llm;
+
+        /// <summary>Your own language model, running in the game (see VoiceAgentClient.OnLlmRequest).</summary>
+        public Func<LlmRequest, LlmReply, Task<string>> OnLlmRequest;
+
+        /// <summary>Open the connection again when it drops. The character does not remember what came before.</summary>
+        public bool AutoReconnect = true;
 
         /// <summary>
         /// Send silence instead of the microphone while the character's voice is playing, so laptop
@@ -99,13 +129,25 @@ namespace Lokutor
         public bool MuteMicWhileSpeaking = true;
 
         /// <summary>
+        /// The server has the character say "One moment" or the like while an action runs. False: it says nothing until its
+        /// answer.
+        /// </summary>
+        public bool ActionFiller;
+
+        /// <summary>
+        /// What it begins to say before it calls an action is heard. False is for an action that it must call before it
+        /// answers ("how funny that was"): the model can write its plan there.
+        /// </summary>
+        public bool SpeakBeforeActions = true;
+
+        /// <summary>
         /// How long the microphone stays muted after the voice has finished playing: the room's echo
         /// still reaches it for a moment.
         /// </summary>
         public int EchoTailMs = 300;
 
-        public string Url = "wss://api.lokutor.com/ws/agent";
-        public string UserAgent = "lokutor-game-sdk/0.1";
+        public string Url = LokutorApi.VoiceAgentUrl;
+        public string UserAgent = "lokutor-game-sdk/" + LokutorApi.Version;
         public TimeSpan ConnectTimeout = TimeSpan.FromSeconds(15);
 
         /// <summary>
@@ -117,50 +159,121 @@ namespace Lokutor
 
     public sealed class LokutorSession : IDisposable
     {
-        public const int DefaultPlaybackRate = 44100;
-        public const int DefaultInputRate = 16000;
+        public const int DefaultPlaybackRate = LokutorApi.OutputRate;
+        public const int DefaultInputRate = LokutorApi.InputRate;
+
+        const string DefaultPersona = "You are a friendly character in a video game. Keep answers short.";
+
+        sealed class Pump : EventPump
+        {
+            public Action<Exception> Failed;
+            public void Add(Action a) => Post(a);
+            protected override void OnCallbackFailed(Exception e) => Failed(e);
+        }
 
         readonly SessionOptions options;
+        readonly Pump pump = new Pump();
         readonly Dictionary<string, AgentAction> actions = new Dictionary<string, AgentAction>();
-        readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
-        readonly ConcurrentQueue<byte[]> binaryOut = new ConcurrentQueue<byte[]>();
-        readonly ConcurrentQueue<string> textOut = new ConcurrentQueue<string>();
-        readonly SemaphoreSlim sendSignal = new SemaphoreSlim(0);
+        readonly List<KeyValuePair<string, string>> context = new List<KeyValuePair<string, string>>();
+        long contextDueTicks;
+        StreamResampler micResampler;
 
-        ClientWebSocket ws;
-        CancellationTokenSource cts;
-        Task receiveTask, sendTask;
-        StreamingResampler micResampler;
-        int currentGeneration;
-        DateTime lastAgentAudioUtc = DateTime.MinValue;
-        DateTime speakingSinceUtc = DateTime.MinValue;
+        // Written on the network thread, read on the game's.
+        volatile AgentState state = AgentState.Disconnected;
         volatile bool replyAudioArrived;
-        long audibleUntilTicks;
-        DateTime playerTalkingSinceUtc = DateTime.MinValue;
+        volatile bool replyOpen;        // a reply is being made or spoken; audio outside one is the agent's background sound
+        volatile bool newReply;
+        volatile float voiceEnd;        // when the reply's last mouth shape ends, in seconds of voice
+        long lastAgentAudioTicks, speakingSinceTicks, lastVisemeTicks, playerTalkingSinceTicks;
+        long audibleUntilTicks, echoUntilTicks, lastMicVoiceTicks;
+        // The generation being held back (see ForgetFiller), and what came of it. Network thread and Update().
+        readonly object fillerGate = new object();
+        readonly List<Action> held = new List<Action>();
+        bool turnHasVoice;              // something has been said since the player's last line
+        int filler;
+        int speaking, dropped;          // the generation being heard, and the one that will not be: see SpeakBeforeActions
+        int turnActions;                // since the player's last line
+        double heldSeconds;
+        long actionTicks, heldSinceTicks, heldTextTicks;
         // After an action, the character still owes the reply that uses its result: until that reply's
         // text arrives (or 8 s), it is thinking, not done.
         long replyOwedUntilTicks;
-        long lastMicVoiceTicks;
-        volatile AgentState state = AgentState.Disconnected;
         AgentState reportedState = AgentState.Disconnected;
+        string endReason;
+        volatile bool firstConnect;
 
         public LokutorSession(SessionOptions options)
         {
             this.options = options ?? throw new ArgumentNullException(nameof(options));
             Playback = new PlaybackBuffer(DefaultPlaybackRate);
+            pump.Failed = e => Error?.Invoke(new LokutorError("callback", e.Message, e.GetType().Name, false));
+            // The client hands everything over as it arrives; the session decides what waits for Update().
+            Client = new VoiceAgentClient { Dispatcher = a => a() };
+            Client.Opened = () => firstConnect = false;
+            Client.Status += OnStatus;
+            Client.GenerationStarted += OnGeneration;
+            Client.Audio += (pcm, gen) =>
+            {
+                var samples = Pcm16.ToFloat(pcm);
+                if (!Hold(gen, () => OnAgentAudio(samples), samples.Length / (double)Client.PlaybackRate)) OnAgentAudio(samples);
+            };
+            Client.Visemes += (list, gen) =>
+            {
+                if (!Hold(gen, () => OnVisemes(list, gen), 0)) OnVisemes(list, gen);
+            };
+            Client.Transcription += t =>
+            {
+                lock (fillerGate) turnActions = 0;     // a line that the server does not announce with "listening"
+                Post(() => PlayerSaid?.Invoke(t));
+            };
+            Client.TranscriptionPartial += t => Post(() => PlayerSaidPartial?.Invoke(t));
+            Client.Response += t =>
+            {
+                Interlocked.Exchange(ref replyOwedUntilTicks, 0); // the reply after an action has come
+                lock (fillerGate)
+                {
+                    actionTicks = 0;
+                    if (filler != 0 && heldTextTicks == 0) heldTextTicks = DateTime.UtcNow.Ticks;
+                }
+                Post(() => AgentSaid?.Invoke(t));
+            };
+            Client.TranscriptTruncated += (heard, full) => Post(() => AgentInterrupted?.Invoke(heard));
+            Client.ToolCall += OnToolCall;
+            Client.SessionLimit += (seconds, reason) => Post(() => SessionLimit?.Invoke((int)seconds));
+            Client.Error += e =>
+            {
+                // Disconnected carries the first, ConnectAsync throws the second.
+                if (e.Code != "session.ended" && !firstConnect) RaiseError(e);
+            };
+            Client.Reconnected += () => Post(() => Reconnected?.Invoke());
+            Client.Ended += (code, reason) => endReason = string.IsNullOrEmpty(reason) ? "closed (" + code + ")" : reason;
         }
 
         // ---- What the game reads -----------------------------------------------------------------
 
+        /// <summary>See SessionOptions.MuteMicWhileSpeaking; it can change at any time.</summary>
+        public bool MuteMicWhileSpeaking { get => options.MuteMicWhileSpeaking; set => options.MuteMicWhileSpeaking = value; }
+        /// <summary>See SessionOptions.ActionFiller; it can change at any time.</summary>
+        public bool ActionFiller { get => options.ActionFiller; set => options.ActionFiller = value; }
+        /// <summary>See SessionOptions.SpeakBeforeActions; it can change at any time.</summary>
+        public bool SpeakBeforeActions { get => options.SpeakBeforeActions; set => options.SpeakBeforeActions = value; }
+        /// <summary>Other voices of the game that would reach the microphone: with MuteMicWhileSpeaking, it is muted while this is true.</summary>
+        public Func<bool> OthersAudible;
+        /// <summary>The layer underneath, for what the session does not cover.</summary>
+        public VoiceAgentClient Client { get; }
         /// <summary>The character's voice. Pull from it in your audio callback at <see cref="PlaybackRate"/>.</summary>
         public PlaybackBuffer Playback { get; }
         public int PlaybackRate => Playback.SampleRate;
-        public int InputRate { get; private set; } = DefaultInputRate;
+        public int InputRate => Client.InputRate;
         public AgentState State => state;
-        public bool IsConnected => ws != null && ws.State == WebSocketState.Open;
-        public string SessionId { get; private set; }
+        public bool IsConnected => Client.Connected;
+        public string SessionId => string.IsNullOrEmpty(Client.SessionId) ? null : Client.SessionId;
         /// <summary>Loudness of the character's voice right now, 0..1: drive a mouth or jaw with it.</summary>
         public float MouthOpen => Playback.Level;
+        /// <summary>How much of the current reply has been heard, in seconds: the clock for visemes.</summary>
+        public float HeardSeconds => Playback.HeardSeconds;
+        /// <summary>The character's voice is being heard (not its background sound).</summary>
+        public bool IsSpeaking => state == AgentState.Speaking || (replyOpen && Playback.IsAudible);
 
         // ---- Events (delivered on Update() unless a Dispatcher is set) -----------------------------
 
@@ -169,85 +282,118 @@ namespace Lokutor
         public event Action<string> PlayerSaid;
         /// <summary>The player's words while they are still talking.</summary>
         public event Action<string> PlayerSaidPartial;
-        /// <summary>What the character is about to say.</summary>
+        /// <summary>What the character is about to say. LokutorApi.StripTags takes out [laugh] and the like for subtitles.</summary>
         public event Action<string> AgentSaid;
         /// <summary>The player cut the character off; this is what they actually heard.</summary>
         public event Action<string> AgentInterrupted;
         /// <summary>An action ran (after its handler returned): name, arguments, result.</summary>
         public event Action<string, ActionArgs, string> ActionCalled;
+        /// <summary>A new reply begins, or the one being spoken was cut: a mouth should close.</summary>
+        public event Action VoiceCleared;
+        /// <summary>Mouth shapes of the reply, as they arrive.</summary>
+        public event Action<IReadOnlyList<Viseme>> Visemes;
+        /// <summary>The same with the names of version 0.1.</summary>
         public event Action<IReadOnlyList<VisemeMark>> VisemesReceived;
         public event Action<LokutorError> Error;
         /// <summary>The server announced how many seconds this session may still run.</summary>
         public event Action<int> SessionLimit;
+        /// <summary>The connection dropped and is being opened again; then Reconnected, in a fresh conversation.</summary>
+        public event Action Reconnecting;
+        public event Action Reconnected;
         public event Action<string> Disconnected;
 
         // ---- Setup -----------------------------------------------------------------------------------
 
-        /// <summary>
-        /// Lets the character call a game function. Register before <see cref="ConnectAsync"/>; actions
-        /// added later are sent when you call <see cref="RefreshActions"/>.
-        /// </summary>
+        /// <summary>Lets the character call a game function. Works before or during a conversation.</summary>
         public LokutorSession AddAction(AgentAction action)
         {
             lock (actions) actions[action.Name] = action;
+            RefreshActions();
             return this;
         }
 
         public LokutorSession AddAction(string name, string description, Func<ActionArgs, string> handler, params ActionParam[] parameters)
             => AddAction(new AgentAction(name, description, handler, parameters));
 
+        /// <summary>An action that takes a while: the character waits for the result.</summary>
+        public LokutorSession AddActionAsync(string name, string description, Func<ActionArgs, Task<string>> handler, params ActionParam[] parameters)
+            => AddAction(AgentAction.Async(name, description, handler, parameters));
+
         public void RemoveAction(string name)
         {
             lock (actions) actions.Remove(name);
+            RefreshActions();
         }
 
+        /// <summary>Sends the list of actions again. AddAction and RemoveAction do it for you.</summary>
+        public void RefreshActions()
+        {
+            if (IsConnected) Client.UpdateTools(ToolList());
+        }
+
+        List<ToolDefinition> ToolList()
+        {
+            var list = new List<ToolDefinition>();
+            lock (actions)
+                foreach (var a in actions.Values) list.Add(a.ToTool());
+            return list;
+        }
+
+        /// <summary>Opens the conversation. Throws IOException when it cannot.</summary>
         public async Task ConnectAsync(CancellationToken cancel = default)
         {
-            if (ws != null) throw new InvalidOperationException("Already connected; call DisconnectAsync first.");
+            if (state != AgentState.Disconnected) throw new InvalidOperationException("Already connected; call DisconnectAsync first.");
             if (string.IsNullOrEmpty(options.ApiKey) && options.TicketProvider == null)
                 throw new InvalidOperationException("Set SessionOptions.ApiKey (or TicketProvider).");
 
+            bool dashboard = !string.IsNullOrEmpty(options.AgentId);
+            Client.ApiKey = options.ApiKey;
+            Client.Auth = options.TicketProvider == null ? null : (Func<Task<string>>)GetTicket;
+            Client.AgentId = options.AgentId;
+            Client.ServerUrl = options.Url;
+            Client.UserAgent = options.UserAgent;
+            Client.ConnectTimeout = options.ConnectTimeout;
+            Client.AutoReconnect = options.AutoReconnect;
+            Client.Voice = options.Voice;
+            Client.Language = ConfigLanguage(options.Language, dashboard);
+            Client.Pitch = options.Pitch;
+            Client.WantVisemes = options.Visemes;
+            Client.Llm = options.Llm;
+            Client.OnLlmRequest = options.OnLlmRequest == null ? null : (Func<LlmRequest, LlmReply, Task<string>>)((request, reply) => OnUpdate(() => options.OnLlmRequest(request, reply)));
+            Client.Tools = ToolList();
+            Client.Prompt = FullPrompt();
+
             SetState(AgentState.Connecting);
-            currentGeneration = 0;
             Playback.Clear();
             micResampler = null;
+            newReply = replyOpen = replyAudioArrived = false;
+            voiceEnd = 0f;
+            Interlocked.Exchange(ref replyOwedUntilTicks, 0);
+            endReason = null;
+            firstConnect = true;
+            bool ok;
+            using (cancel.Register(Client.Disconnect)) ok = await Client.ConnectAsync().ConfigureAwait(false);
+            firstConnect = false;
+            if (ok) return;
+            SetState(AgentState.Disconnected);
+            cancel.ThrowIfCancellationRequested();
+            var e = Client.LastError;
+            string why = e == null ? "" : e.Detail.Length > 0 ? e.Detail : e.Message;
+            throw new IOException("Could not reach Lokutor (" + why + "). Check the API key and network.", e == null ? null : new LokutorException(e));
+        }
 
-            var query = new List<string>();
-            if (!string.IsNullOrEmpty(options.AgentId)) query.Add("agent_id=" + Uri.EscapeDataString(options.AgentId));
-            var socket = new ClientWebSocket();
-            socket.Options.SetRequestHeader("User-Agent", options.UserAgent);
-            if (options.TicketProvider != null)
-            {
-                string ticket = await options.TicketProvider().ConfigureAwait(false);
-                query.Add("api_key=" + Uri.EscapeDataString(ticket));
-            }
-            else
-            {
-                socket.Options.SetRequestHeader("X-API-Key", options.ApiKey);
-            }
-            var uri = new Uri(options.Url + (query.Count > 0 ? "?" + string.Join("&", query) : ""));
+        // The first ticket is asked for on the caller's thread; the ones for reconnecting, on Update().
+        Task<string> GetTicket() => firstConnect ? options.TicketProvider() : OnUpdate(options.TicketProvider);
 
-            cts = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+        Task<string> OnUpdate(Func<Task<string>> f)
+        {
+            var done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Post(async () =>
             {
-                timeout.CancelAfter(options.ConnectTimeout);
-                try
-                {
-                    await socket.ConnectAsync(uri, timeout.Token).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    socket.Dispose();
-                    cts.Dispose();
-                    cts = null;
-                    SetState(AgentState.Disconnected);
-                    throw new IOException("Could not reach Lokutor (" + e.Message + "). Check the API key and network.", e);
-                }
-            }
-            ws = socket;
-            receiveTask = Task.Run(() => ReceiveLoop(cts.Token));
-            sendTask = Task.Run(() => SendLoop(cts.Token));
-            SendConfig();
+                try { done.TrySetResult(await f()); }
+                catch (Exception e) { done.TrySetException(e); }
+            });
+            return done.Task;
         }
 
         /// <summary>
@@ -260,45 +406,91 @@ namespace Lokutor
             return language == "auto" ? "" : language;
         }
 
-        void SendConfig()
+        // ---- The character -------------------------------------------------------------------------
+
+        string FullPrompt()
         {
-            bool dashboardAgent = !string.IsNullOrEmpty(options.AgentId);
-            // A dashboard agent keeps its own voice, language and prompt unless the game overrides them.
-            if (!string.IsNullOrEmpty(options.Voice)) SendJson(Msg("voice", options.Voice));
-            else if (!dashboardAgent) SendJson(Msg("voice", "F1"));
-            var language = ConfigLanguage(options.Language, dashboardAgent);
-            if (language != null) SendJson(Msg("language", language));
-            SendTools();
-            SendJson(Msg("visemes", options.Visemes));
-            if (!string.IsNullOrEmpty(options.Persona)) SendJson(Msg("prompt", options.Persona));
-            else if (!dashboardAgent) SendJson(Msg("prompt", "You are a friendly character in a video game. Keep answers short."));
-            // Last: the server starts the conversation once it has the whole configuration.
-            SendJson(new Dictionary<string, object> { ["type"] = "rates", ["playback"] = DefaultPlaybackRate, ["input"] = DefaultInputRate });
+            string p = options.Persona;
+            if (string.IsNullOrEmpty(p))
+            {
+                // A dashboard agent keeps its own prompt, which the game cannot see or extend.
+                if (!string.IsNullOrEmpty(options.AgentId)) return null;
+                p = DefaultPersona;
+            }
+            lock (context)
+            {
+                if (context.Count == 0) return p;
+                var sb = new StringBuilder(p).Append("\n\n").Append(options.ContextHeading);
+                foreach (var c in context) sb.Append("\n- ").Append(c.Key).Append(": ").Append(c.Value);
+                return sb.ToString();
+            }
         }
 
-        void SendTools()
+        void PushPrompt()
         {
-            var defs = new List<object>();
-            lock (actions)
-                foreach (var a in actions.Values) defs.Add(a.ToToolDefinition());
-            if (defs.Count > 0) SendJson(Msg("tools", defs));
+            string p = FullPrompt();
+            if (p == null) return;
+            if (IsConnected) Client.UpdatePrompt(p);
+            else Client.Prompt = p;
         }
-
-        /// <summary>Re-sends the action list (after AddAction/RemoveAction mid-conversation).</summary>
-        public void RefreshActions() => SendTools();
 
         /// <summary>Changes who the character is, mid-conversation.</summary>
         public void SetPersona(string persona)
         {
             options.Persona = persona;
-            if (IsConnected) SendJson(Msg("prompt", persona));
+            PushPrompt();
+        }
+
+        /// <summary>
+        /// Tells the character something about the game right now ("Time left", "20 seconds"), without rewriting
+        /// its persona. Null takes it out. Changes in the same quarter second are sent together, by Update(). A
+        /// dashboard agent needs a Persona for this: its own prompt cannot be extended from the game.
+        /// </summary>
+        public void SetContext(string key, string value)
+        {
+            lock (context)
+            {
+                int i = context.FindIndex(c => c.Key == key);
+                if (value == null)
+                {
+                    if (i < 0) return;
+                    context.RemoveAt(i);
+                }
+                else if (i < 0) context.Add(new KeyValuePair<string, string>(key, value));
+                else if (context[i].Value == value) return;
+                else context[i] = new KeyValuePair<string, string>(key, value);
+            }
+            if (state != AgentState.Disconnected && Interlocked.Read(ref contextDueTicks) == 0)
+                Interlocked.Exchange(ref contextDueTicks, DateTime.UtcNow.AddMilliseconds(250).Ticks);
+        }
+
+        public void SetVoice(string voice)
+        {
+            options.Voice = voice;
+            if (state != AgentState.Disconnected) Client.UpdateVoice(voice);
+        }
+
+        /// <summary>"auto": the character follows the language the player speaks.</summary>
+        public void SetLanguage(string language)
+        {
+            options.Language = language;
+            if (state != AgentState.Disconnected) Client.UpdateLanguage(language);
+        }
+
+        public void SetPitch(float pitch)
+        {
+            options.Pitch = pitch;
+            if (state != AgentState.Disconnected) Client.UpdatePitch(pitch);
         }
 
         /// <summary>Forgets the conversation so far (the character starts fresh).</summary>
         public void ResetConversation()
         {
-            if (IsConnected) SendJson(new Dictionary<string, object> { ["type"] = "reset" });
+            if (IsConnected) Client.Reset();
         }
+
+        /// <summary>The conversation so far.</summary>
+        public List<TranscriptLine> GetTranscript() => Client.GetTranscript();
 
         // ---- Microphone ----------------------------------------------------------------------------
 
@@ -311,13 +503,12 @@ namespace Lokutor
         {
             if (!IsConnected || count <= 0) return;
             if (micResampler == null || micResampler.InputRate != sampleRate || micResampler.OutputRate != InputRate)
-                micResampler = new StreamingResampler(sampleRate, InputRate);
+                micResampler = new StreamResampler(sampleRate, InputRate);
             var resampled = micResampler.Process(samples, offset, count);
             if (resampled.Length == 0) return;
-            if (options.MuteMicWhileSpeaking && AgentAudible) Array.Clear(resampled, 0, resampled.Length);
+            if (options.MuteMicWhileSpeaking && (AgentAudible || (OthersAudible != null && OthersAudible()))) Array.Clear(resampled, 0, resampled.Length);
             NoteMicLevel(resampled);
-            binaryOut.Enqueue(Pcm16.FromFloat(resampled, 0, resampled.Length));
-            sendSignal.Release();
+            Client.SendAudio(Pcm16.FromFloat(resampled, 0, resampled.Length));
         }
 
         /// <summary>Sends 16 kHz mono PCM16 as is (e.g. a recorded line).</summary>
@@ -325,18 +516,12 @@ namespace Lokutor
         {
             if (!IsConnected || pcm16At16k == null || pcm16At16k.Length == 0) return;
             NoteMicLevel(Pcm16.ToFloat(pcm16At16k));
-            binaryOut.Enqueue(pcm16At16k);
-            sendSignal.Release();
+            Client.SendAudio(pcm16At16k);
         }
-
-        bool ReplyOwed => DateTime.UtcNow.Ticks < System.Threading.Interlocked.Read(ref replyOwedUntilTicks);
 
         void NoteMicLevel(float[] samples)
         {
-            if (samples.Length == 0) return;
-            double sum = 0;
-            foreach (var v in samples) sum += v * v;
-            if (Math.Sqrt(sum / samples.Length) > 0.02) System.Threading.Interlocked.Exchange(ref lastMicVoiceTicks, DateTime.UtcNow.Ticks);
+            if (LokutorAudio.CalculateRMS(samples) > 0.02f) Interlocked.Exchange(ref lastMicVoiceTicks, DateTime.UtcNow.Ticks);
         }
 
         /// <summary>
@@ -345,19 +530,21 @@ namespace Lokutor
         /// the microphone stays muted until then. Engines that do not call it get EchoTailMs after their
         /// last read, which is enough when they read close to real time.
         /// </summary>
-        public void SetVoiceAudibleUntil(DateTime utc) => System.Threading.Interlocked.Exchange(ref audibleUntilTicks, utc.Ticks);
+        public void SetVoiceAudibleUntil(DateTime utc) => Interlocked.Exchange(ref audibleUntilTicks, utc.Ticks);
 
-        /// <summary>The character can still be heard, so it could reach the microphone: voice waiting,
-        /// voice in the engine's buffers, or the room's echo just after.</summary>
-        bool AgentAudible
+        // Voice waiting, voice in the engine's buffers, or the room's echo just after.
+        bool SoundAudible
         {
             get
             {
                 if (Playback.IsPlaying) return true;
-                long until = Math.Max(System.Threading.Interlocked.Read(ref audibleUntilTicks), Playback.LastVoiceReadUtc.Ticks);
+                long until = Math.Max(Interlocked.Read(ref audibleUntilTicks), Playback.LastVoiceReadUtc.Ticks);
                 return DateTime.UtcNow.Ticks < until + TimeSpan.FromMilliseconds(options.EchoTailMs).Ticks;
             }
         }
+
+        /// <summary>The character can still be heard, so it could reach the microphone. Its background sound does not count.</summary>
+        internal bool AgentAudible => (replyOpen && SoundAudible) || DateTime.UtcNow.Ticks < Interlocked.Read(ref echoUntilTicks);
 
         // ---- Main-thread pump --------------------------------------------------------------------
 
@@ -367,55 +554,66 @@ namespace Lokutor
         /// </summary>
         public void Update()
         {
-            // Speaking ends once this reply's audio has arrived, nothing new has come for a moment, and it
-            // can no longer be heard (engine buffers and the room's echo included): Ready then means the
-            // microphone is really open again. The server says "speaking" when synthesis starts, which
-            // can be half a second before the first audio; if no audio ever comes, give up after 5 s.
-            if (state == AgentState.Speaking && !Playback.IsPlaying)
+            var now = DateTime.UtcNow.Ticks;
+            lock (fillerGate)
+                // The reply to the action comes when what was said meanwhile has had time to be heard.
+                if (filler != 0 && heldTextTicks != 0 && now > Math.Max(heldTextTicks + TimeSpan.TicksPerSecond * 3, heldSinceTicks + (long)(TimeSpan.TicksPerSecond * (heldSeconds + 2))))
+                    PlayFiller();
+            if (state == AgentState.Speaking && ReplyFinished(now))
             {
-                var now = DateTime.UtcNow;
-                bool finished = replyAudioArrived
-                    ? (now - (lastAgentAudioUtc > speakingSinceUtc ? lastAgentAudioUtc : speakingSinceUtc)).TotalMilliseconds > 400 && !AgentAudible
-                    : (now - speakingSinceUtc).TotalSeconds > 5;
-                if (finished) SetState(ReplyOwed ? AgentState.Thinking : AgentState.Ready);
+                // Still audible when an agent's background sound goes on: only the echo of the voice is left to wait for.
+                Interlocked.Exchange(ref echoUntilTicks, SoundAudible ? DateTime.UtcNow.AddMilliseconds(options.EchoTailMs).Ticks : 0);
+                replyOpen = false;
+                SetState(ReplyOwed ? AgentState.Thinking : AgentState.Ready);
             }
             // The server says when the player starts talking, but not when a start led nowhere (a noise,
             // or speech it set aside). Without a reply under way, the player is done once the microphone
-            // has been quiet for 2 s.
-            if (state == AgentState.PlayerTalking)
-            {
-                var now = DateTime.UtcNow;
-                var lastVoice = new DateTime(System.Threading.Interlocked.Read(ref lastMicVoiceTicks), DateTimeKind.Utc);
-                if ((now - playerTalkingSinceUtc).TotalSeconds > 2.5 && (now - lastVoice).TotalSeconds > 2.0 && !ReplyOwed)
-                    SetState(AgentState.Ready);
-            }
-            if (state == AgentState.Thinking && !ReplyOwed && System.Threading.Interlocked.Read(ref replyOwedUntilTicks) != 0)
+            // has been quiet for 4 s: the answer to a real line can take more than two to start.
+            if (state == AgentState.PlayerTalking && Seconds(now, ref playerTalkingSinceTicks) > 4.5 && Seconds(now, ref lastMicVoiceTicks) > 4.0 && !ReplyOwed)
+                SetState(AgentState.Ready);
+            if (state == AgentState.Thinking && !ReplyOwed && Interlocked.Read(ref replyOwedUntilTicks) != 0)
             {
                 // The reply owed after an action never came (8 s): stop waiting for it.
-                System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, 0);
+                Interlocked.Exchange(ref replyOwedUntilTicks, 0);
                 SetState(AgentState.Ready);
             }
-            while (pending.TryDequeue(out var a))
+            long due = Interlocked.Read(ref contextDueTicks);
+            if (due != 0 && now >= due)
             {
-                try { a(); }
-                catch (Exception e) { RaiseError(new LokutorError("callback", e.Message)); }
+                Interlocked.Exchange(ref contextDueTicks, 0);
+                PushPrompt();
             }
+            pump.Update();
+        }
+
+        static double Seconds(long now, ref long since) => TimeSpan.FromTicks(now - Interlocked.Read(ref since)).TotalSeconds;
+
+        bool ReplyOwed => DateTime.UtcNow.Ticks < Interlocked.Read(ref replyOwedUntilTicks);
+
+        // A reply is over once its audio has arrived, nothing new has come for a moment, and it can no longer be
+        // heard (engine buffers and the room's echo included): Ready then means the microphone is really open
+        // again. An agent with a background sound keeps sending audio: there, its voice is over when its last
+        // mouth shape has played.
+        bool ReplyFinished(long now)
+        {
+            // The server says "speaking" when synthesis starts, which can be half a second before the first
+            // audio; if no audio ever comes, give up after 5 s.
+            if (!replyAudioArrived) return Seconds(now, ref speakingSinceTicks) > 5;
+            double quiet = Math.Min(Seconds(now, ref lastAgentAudioTicks), Seconds(now, ref speakingSinceTicks));
+            if (quiet > 0.4 && !SoundAudible) return true;
+            return voiceEnd > 0f && Playback.HeardSeconds > voiceEnd + 0.6f && Seconds(now, ref lastVisemeTicks) > 1.5;
         }
 
         void Post(Action a)
         {
-            if (options.Dispatcher != null) options.Dispatcher(a);
-            else pending.Enqueue(a);
+            pump.Dispatcher = options.Dispatcher;
+            pump.Add(a);
         }
 
         void SetState(AgentState next)
         {
-            if (next == AgentState.PlayerTalking && state != AgentState.PlayerTalking) playerTalkingSinceUtc = DateTime.UtcNow;
-            if (next == AgentState.Speaking && state != AgentState.Speaking)
-            {
-                speakingSinceUtc = DateTime.UtcNow;
-                replyAudioArrived = false;
-            }
+            if (next == AgentState.PlayerTalking && state != AgentState.PlayerTalking) Interlocked.Exchange(ref playerTalkingSinceTicks, DateTime.UtcNow.Ticks);
+            if (next == AgentState.Speaking && state != AgentState.Speaking) Interlocked.Exchange(ref speakingSinceTicks, DateTime.UtcNow.Ticks);
             state = next;
             Post(() =>
             {
@@ -427,165 +625,122 @@ namespace Lokutor
 
         void RaiseError(LokutorError e) => Post(() => Error?.Invoke(e));
 
-        // ---- Network -----------------------------------------------------------------------------
+        // ---- What the network brings -------------------------------------------------------------
 
-        static Dictionary<string, object> Msg(string type, object data) =>
-            new Dictionary<string, object> { ["type"] = type, ["data"] = data };
-
-        void SendJson(Dictionary<string, object> msg)
-        {
-            textOut.Enqueue(MiniJson.Serialize(msg));
-            sendSignal.Release();
-        }
-
-        async Task SendLoop(CancellationToken token)
-        {
-            try
-            {
-                while (!token.IsCancellationRequested)
-                {
-                    await sendSignal.WaitAsync(token).ConfigureAwait(false);
-                    var socket = ws;
-                    if (socket == null || socket.State != WebSocketState.Open) continue;
-                    // Text first: configuration and tool results must not wait behind audio.
-                    if (textOut.TryDequeue(out var text))
-                    {
-                        var bytes = Encoding.UTF8.GetBytes(text);
-                        await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token).ConfigureAwait(false);
-                    }
-                    else if (binaryOut.TryDequeue(out var audio))
-                    {
-                        await socket.SendAsync(new ArraySegment<byte>(audio), WebSocketMessageType.Binary, true, token).ConfigureAwait(false);
-                    }
-                }
-            }
-            catch (OperationCanceledException) { }
-            catch (WebSocketException e) { RaiseError(new LokutorError("connection", e.Message)); }
-            catch (ObjectDisposedException) { }
-        }
-
-        async Task ReceiveLoop(CancellationToken token)
-        {
-            var buffer = new byte[64 * 1024];
-            var message = new MemoryStream();
-            string reason = "closed";
-            try
-            {
-                while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
-                {
-                    var r = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), token).ConfigureAwait(false);
-                    if (r.MessageType == WebSocketMessageType.Close)
-                    {
-                        reason = string.IsNullOrEmpty(ws.CloseStatusDescription)
-                            ? "closed (" + (int)(ws.CloseStatus ?? WebSocketCloseStatus.NormalClosure) + ")"
-                            : ws.CloseStatusDescription;
-                        break;
-                    }
-                    message.Write(buffer, 0, r.Count);
-                    if (!r.EndOfMessage) continue;
-                    var data = message.ToArray();
-                    message.SetLength(0);
-                    if (r.MessageType == WebSocketMessageType.Binary) OnAgentAudio(Pcm16.ToFloat(data), currentGeneration);
-                    else HandleServerMessage(Encoding.UTF8.GetString(data));
-                }
-            }
-            catch (OperationCanceledException) { reason = "disconnected"; }
-            catch (WebSocketException e) { reason = "connection lost: " + e.Message; }
-            catch (ObjectDisposedException) { reason = "disconnected"; }
-            SetState(AgentState.Disconnected);
-            Post(() => Disconnected?.Invoke(reason));
-        }
-
-        /// <summary>Takes the text frames waiting to be sent. For tests, which run without a socket.</summary>
+        /// <summary>Takes the text frames sent without a socket. For tests.</summary>
         internal List<string> DrainOutgoingTextForTests()
         {
-            var list = new List<string>();
-            while (textOut.TryDequeue(out var t)) list.Add(t);
-            return list;
+            lock (Client.UnsentForTests)
+            {
+                var list = new List<string>(Client.UnsentForTests);
+                Client.UnsentForTests.Clear();
+                return list;
+            }
         }
 
         /// <summary>Handles one JSON frame from the server. Internal so tests can feed it frames.</summary>
         internal void HandleServerMessage(string json)
         {
-            Dictionary<string, object> msg;
-            try { msg = MiniJson.Parse(json) as Dictionary<string, object>; }
-            catch (FormatException) { return; }
-            if (msg == null) return;
-            string type = Str(msg, "type");
-            switch (type)
+            Client.HandleMessage(json);
+            MatchRate();
+        }
+
+        void MatchRate()
+        {
+            if (Client.PlaybackRate == Playback.SampleRate) return;
+            Playback.Clear();
+            Playback.SampleRate = Client.PlaybackRate;
+        }
+
+        // What the server has it say while an action runs comes right after the action, before any text, and the reply to
+        // the action is another generation. It is held until that one comes. Should it turn out to be the reply (it is too
+        // long, or its text comes and nothing follows), it is played.
+        void ForgetFiller()
+        {
+            filler = 0;
+            held.Clear();
+            heldSeconds = 0;
+            heldTextTicks = 0;
+        }
+
+        bool Hold(int generation, Action later, double seconds)
+        {
+            lock (fillerGate)
             {
-                case "audio":
-                {
-                    int gen = Int(msg, "generation");
-                    string b64 = Str(msg, "data");
-                    if (!string.IsNullOrEmpty(b64)) OnAgentAudio(Pcm16.ToFloat(Convert.FromBase64String(b64)), gen);
-                    break;
-                }
-                case "server_rates":
-                {
-                    int playback = Int(msg, "playback"), input = Int(msg, "input");
-                    if (input > 0) InputRate = input;
-                    if (playback > 0 && playback != Playback.SampleRate)
-                    {
-                        Playback.Clear();
-                        Playback.SampleRate = playback;
-                    }
-                    break;
-                }
-                case "status":
-                    OnStatus(Str(msg, "data"), Int(msg, "generation"), Str(msg, "session_id"));
-                    break;
-                case "transcript":
-                {
-                    string text = Str(msg, "data");
-                    if (string.IsNullOrEmpty(text)) text = Str(msg, "text");
-                    bool partial = msg.TryGetValue("partial", out var p) && p is bool pb && pb;
-                    if (Str(msg, "role") == "agent")
-                    {
-                        System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, 0); // the reply after an action has come
-                        Post(() => AgentSaid?.Invoke(text));
-                    }
-                    else if (partial) Post(() => PlayerSaidPartial?.Invoke(text));
-                    else Post(() => PlayerSaid?.Invoke(text));
-                    break;
-                }
-                case "transcript_truncated":
-                {
-                    string heard = Str(msg, "data");
-                    Post(() => AgentInterrupted?.Invoke(heard));
-                    break;
-                }
-                case "tool_call":
-                    OnToolCall(Str(msg, "name"), Str(msg, "arguments"), Str(msg, "call_id"));
-                    break;
-                case "visemes":
-                    OnVisemes(msg.TryGetValue("data", out var vd) ? vd as List<object> : null);
-                    break;
-                case "session_limit":
-                {
-                    var d = msg.TryGetValue("data", out var sl) ? sl as Dictionary<string, object> : null;
-                    int seconds = d != null ? Int(d, "seconds") : 0;
-                    Post(() => SessionLimit?.Invoke(seconds));
-                    break;
-                }
-                case "error":
-                {
-                    msg.TryGetValue("data", out var ed);
-                    var e = ed is Dictionary<string, object> d
-                        ? new LokutorError(Str(d, "code"), Str(d, "message"))
-                        : new LokutorError("error", ed as string ?? "server error");
-                    RaiseError(e);
-                    break;
-                }
+                if (dropped != 0 && generation == dropped) return true;
+                if (filler == 0 || generation != filler) return false;
+                held.Add(later);
+                heldSeconds += seconds;
+                if (heldSeconds > 15) PlayFiller();
+                return true;
             }
         }
 
-        void OnStatus(string status, int generation, string sessionId)
+        void PlayFiller()
         {
+            var later = held.ToArray();
+            int generation = filler;
+            ForgetFiller();
+            actionTicks = 0;
+            OnGeneration(generation);
+            foreach (var a in later) a();
+        }
+
+        void OnGeneration(int generation)
+        {
+            lock (fillerGate)
+            {
+                ForgetFiller();
+                dropped = 0;
+                if (DateTime.UtcNow.Ticks - actionTicks < TimeSpan.TicksPerMillisecond * 400)
+                {
+                    filler = generation;
+                    heldSinceTicks = DateTime.UtcNow.Ticks;
+                    return;
+                }
+                turnHasVoice = true;
+                speaking = generation;
+            }
+            // A new reply: whatever was still queued belongs to the old one.
+            MatchRate();
+            Playback.Clear();
+            voiceEnd = 0f;
+            newReply = true;
+            replyOpen = true;
+            replyAudioArrived = false;
+            Post(() => VoiceCleared?.Invoke());
+        }
+
+        void OnStatus(string status)
+        {
+            lock (fillerGate)
+            {
+                if (status == "listening" || status == "interrupted")
+                {
+                    turnHasVoice = false;
+                    turnActions = 0;
+                    actionTicks = 0;
+                    if (filler != 0)           // the player goes on talking: the reply may never come, and this is not one
+                    {
+                        dropped = filler;
+                        ForgetFiller();
+                    }
+                }
+                if (status == "interrupted")
+                {
+                    ForgetFiller();
+                    dropped = 0;
+                }
+                if ((filler != 0 || dropped != 0) && (status == "thinking" || status == "speaking"))
+                {
+                    SetState(AgentState.Thinking);
+                    return;
+                }
+            }
             switch (status)
             {
                 case "connected":
-                    if (!string.IsNullOrEmpty(sessionId)) SessionId = sessionId;
+                    MatchRate();
                     SetState(AgentState.Ready);
                     break;
                 case "listening":
@@ -593,116 +748,123 @@ namespace Lokutor
                     if (state != AgentState.Speaking) SetState(AgentState.PlayerTalking);
                     break;
                 case "interrupted":
-                    Playback.Clear();
+                    CutVoice();
                     SetState(AgentState.PlayerTalking);
                     break;
                 case "thinking":
-                    if (generation > currentGeneration)
-                    {
-                        // A new reply: whatever was still queued belongs to the old one.
-                        currentGeneration = generation;
-                        Playback.Clear();
-                        SetState(AgentState.Thinking);
-                    }
-                    else if (state != AgentState.Speaking && !Playback.IsPlaying)
-                    {
-                        // The server says "thinking" again before each sentence of the same reply;
-                        // only a character that is not already talking is thinking.
-                        SetState(AgentState.Thinking);
-                    }
+                    // The server says "thinking" again before each sentence of the same reply; only a
+                    // character that is not already talking is thinking.
+                    if (newReply || (state != AgentState.Speaking && !Playback.IsPlaying)) SetState(AgentState.Thinking);
+                    newReply = false;
                     break;
                 case "speaking":
+                    replyOpen = true;
                     SetState(AgentState.Speaking);
+                    break;
+                case "reconnecting":
+                    CutVoice();
+                    Interlocked.Exchange(ref replyOwedUntilTicks, 0);
+                    SetState(AgentState.Connecting);
+                    Post(() => Reconnecting?.Invoke());
+                    break;
+                case "disconnected":
+                    if (firstConnect) break;          // ConnectAsync reports it
+                    CutVoice();
+                    SetState(AgentState.Disconnected);
+                    string reason = endReason ?? "connection lost";
+                    Post(() => Disconnected?.Invoke(reason));
                     break;
             }
         }
 
-        void OnAgentAudio(float[] samples, int generation)
+        void CutVoice()
         {
-            if (generation < currentGeneration) return; // a reply that has been superseded
-            if (generation > currentGeneration)
-            {
-                currentGeneration = generation;
-                Playback.Clear();
-            }
+            Playback.Clear();
+            replyOpen = false;
+            Post(() => VoiceCleared?.Invoke());
+        }
+
+        void OnAgentAudio(float[] samples)
+        {
+            MatchRate();
             Playback.Write(samples);
-            lastAgentAudioUtc = DateTime.UtcNow;
+            if (!replyOpen) return;
+            Interlocked.Exchange(ref lastAgentAudioTicks, DateTime.UtcNow.Ticks);
+            newReply = false;
             if (state != AgentState.Speaking) SetState(AgentState.Speaking);
             replyAudioArrived = true;
         }
 
-        void OnToolCall(string name, string arguments, string callId)
+        void OnToolCall(ToolCall call)
         {
-            System.Threading.Interlocked.Exchange(ref replyOwedUntilTicks, DateTime.UtcNow.AddSeconds(8).Ticks);
+            Interlocked.Exchange(ref replyOwedUntilTicks, DateTime.UtcNow.AddSeconds(8).Ticks);
+            bool cut = false;
+            lock (fillerGate)
+            {
+                turnActions++;
+                if (!options.ActionFiller && filler == 0 && !turnHasVoice) actionTicks = DateTime.UtcNow.Ticks;
+                else if (!options.SpeakBeforeActions && turnActions == 1 && filler == 0 && replyOpen && replyAudioArrived && Playback.HeardSeconds < 1.5f)
+                {
+                    dropped = speaking;
+                    cut = true;
+                }
+            }
+            if (cut)
+            {
+                CutVoice();
+                SetState(AgentState.Thinking);
+            }
             if (state != AgentState.Speaking) SetState(AgentState.Thinking);
             AgentAction action;
-            lock (actions) actions.TryGetValue(name ?? "", out action);
-            var args = new ActionArgs(arguments);
+            lock (actions) actions.TryGetValue(call.Name, out action);
+            var args = new ActionArgs(call.Arguments);
+            Post(() => RunAction(action, call, args));
+        }
+
+        async void RunAction(AgentAction action, ToolCall call, ActionArgs args)
+        {
+            string result;
+            if (action == null)
+            {
+                result = "{\"error\":\"This game has no action called " + call.Name + ".\"}";
+            }
+            else
+            {
+                try { result = await action.Handler(args) ?? "done"; }
+                catch (Exception e) { result = "{\"error\":" + MiniJson.Serialize(e.Message) + "}"; }
+            }
+            if (call.CallId.Length > 0) Client.SubmitToolResult(call.CallId, result);
+            try { ActionCalled?.Invoke(call.Name, args, result); }
+            catch (Exception e) { pump.Failed(e); }
+        }
+
+        void OnVisemes(IReadOnlyList<Viseme> list, int generation)
+        {
+            if (list.Count > 0)
+            {
+                Interlocked.Exchange(ref lastVisemeTicks, DateTime.UtcNow.Ticks);
+                var last = list[list.Count - 1];
+                voiceEnd = Math.Max(voiceEnd, last.T + last.D);
+            }
             Post(() =>
             {
-                string result;
-                if (action == null)
-                {
-                    result = "{\"error\":\"This game has no action called " + (name ?? "") + ".\"}";
-                }
-                else
-                {
-                    try { result = action.Handler(args) ?? "done"; }
-                    catch (Exception e) { result = "{\"error\":" + MiniJson.Serialize(e.Message) + "}"; }
-                }
-                if (!string.IsNullOrEmpty(callId))
-                    SendJson(Msg("tool_result", new Dictionary<string, object> { ["call_id"] = callId, ["result"] = result }));
-                ActionCalled?.Invoke(name, args, result);
+                Visemes?.Invoke(list);
+                if (VisemesReceived == null) return;
+                var marks = new List<VisemeMark>(list.Count);
+                foreach (var v in list) marks.Add(new VisemeMark(v));
+                VisemesReceived(marks);
             });
         }
-
-        void OnVisemes(List<object> data)
-        {
-            if (data == null) return;
-            var marks = new List<VisemeMark>(data.Count);
-            foreach (var o in data)
-            {
-                if (!(o is Dictionary<string, object> d)) continue;
-                string c = Str(d, "c");
-                char ch = string.IsNullOrEmpty(c) ? ' ' : c[0];
-                marks.Add(new VisemeMark { Time = (float)Num(d, "t"), Char = ch, Shape = VisemeMark.ShapeFor(ch) });
-            }
-            Post(() => VisemesReceived?.Invoke(marks));
-        }
-
-        static string Str(Dictionary<string, object> d, string k) =>
-            d.TryGetValue(k, out var v) && v != null ? v as string ?? Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture) : "";
-
-        static double Num(Dictionary<string, object> d, string k) =>
-            d.TryGetValue(k, out var v) && v is double x ? x : 0;
-
-        static int Int(Dictionary<string, object> d, string k) => (int)Num(d, k);
 
         // ---- Teardown ----------------------------------------------------------------------------
 
         public async Task DisconnectAsync()
         {
-            var socket = ws;
-            if (socket == null) return;
-            try
-            {
-                if (socket.State == WebSocketState.Open)
-                {
-                    using (var t = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", t.Token).ConfigureAwait(false);
-                }
-            }
-            catch (Exception) { }
-            cts?.Cancel();
-            try { if (receiveTask != null) await Task.WhenAny(receiveTask, Task.Delay(2000)).ConfigureAwait(false); } catch (Exception) { }
-            socket.Dispose();
-            ws = null;
-            cts?.Dispose();
-            cts = null;
-            while (binaryOut.TryDequeue(out _)) { }
-            while (textOut.TryDequeue(out _)) { }
+            if (endReason == null) endReason = "disconnected";
+            await Client.DisconnectAsync().ConfigureAwait(false);
             Playback.Clear();
-            SetState(AgentState.Disconnected);
+            replyOpen = false;
+            if (state != AgentState.Disconnected) SetState(AgentState.Disconnected);
         }
 
         public void Dispose()

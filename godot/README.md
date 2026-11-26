@@ -48,20 +48,71 @@ A parameter can also be just a description: `{"item": "Which item"}`.
 
 ## Signals
 
-`player_said(text)`, `character_said(text)`, `character_interrupted(heard)`, `state_changed(state)`,
-`action_called(name, args, result)`, `error_occurred(code, message)`, `conversation_ended(reason)`.
+`player_said(text)`, `player_said_partial(text)`, `character_said(text)`, `character_interrupted(heard)`,
+`state_changed(state)`, `action_called(name, args, result)`, `visemes_received(list)`, `voice_played(samples, rate)`,
+`reconnecting()`, `reconnected()`, `session_limit(seconds, reason)`, `error_occurred(code, message)`,
+`conversation_ended(reason)`.
 
 ```gdscript
 shopkeeper.character_said.connect(func(text): $Subtitles.text = text)
 shopkeeper.start_conversation()     # e.g. when the player walks up (turn off Start On Ready)
 shopkeeper.stop_conversation()      # when they leave: minutes are billed while connected
 shopkeeper.set_persona("You are now angry with the player.")
+shopkeeper.set_context("Gold the player has", 12)     # what is true right now; call it as often as you like
+shopkeeper.muted = true                                # the player's microphone off
 ```
 
 ## Lip sync
 
-Set **Jaw** (rotated around its X axis) or **Face** + **Mouth Blend Shape**. `mouth_open` (0..1) follows
-the audio being heard, for anything else (sprites, AnimationTree parameters).
+Visemes are on by default: the server sends the mouth shape of every sound (15 shapes, `{v, c, t, d}`) and
+**LokutorLipSync** plays them on the clock of what is being *heard*. Put one beside the agent and drag your
+meshes into **Faces**; the rig is recognised by its blend shape names:
+
+| Your face has | Used as |
+|---|---|
+| `viseme_aa`, `viseme_PP`... (Oculus, Ready Player Me, Meta), `vrc.v_aa`... (VRChat) | the 15 visemes, one to one |
+| `aa ih ou ee oh` (VRM), `Fcl_MTH_A`... (VRoid), `MTH_A`... | mixed from the 15 |
+| `jawOpen`, `mouthPucker`... (ARKit, 52 shapes) | mixed from the 15 |
+| one of `mouthOpen`, `MouthOpen`, `mouth_open`... | how open the mouth is |
+| your own names | **Mapping**: `{"aa": {"gape": 0.8}, "PP": {"lips_closed": 1.0}}` |
+| a jaw node or bone | **Jaw**, or **Skeleton** + **Jaw Bone** |
+| a 2D sprite | **Sprite** with mouth frames, or **Sprite Frames** |
+
+`intensity`, `lead`, `blend` and `loudness` set the feel; `stepped_fps = 12` animates on twos for a cartoon
+look. `mouth_open` (0..1), `weights` and `viseme_changed` drive anything else. Without visemes it follows the
+loudness. An agent and a LokutorVoice can share one: it follows whoever is speaking.
+
+## Written lines
+
+**LokutorVoice** says lines you wrote (barks, narration, tutorials) with the same voices and lip sync, and keeps
+them on disk, so a line said again costs nothing and starts at once:
+
+```gdscript
+await $Guard/LokutorVoice.say("Halt! Who goes there?")
+$Guard/LokutorVoice.say("Behind you!", {"interrupt": true, "voice": "M3"})
+await $Guard/LokutorVoice.preload_lines(["Halt!", "Pass, friend."])
+```
+
+## The clients underneath
+
+The same classes as the [JavaScript](../js) and [Python](../python) SDKs, with the same names, for when you want
+the protocol without the character:
+
+| Class | What it is |
+|---|---|
+| `LokutorVoiceAgentClient` | a conversation: `open()`, `send_audio()`, `update_prompt()`, `submit_tool_result()`, `start_managed()`... It reconnects by itself |
+| `LokutorTTSClient` | `await synthesize(text, {voice, language, visemes})` |
+| `LokutorSTTClient` | `await transcribe(pcm16, {language, keyterms})` |
+| `LokutorSpeechToTextClient` | live transcription from the microphone |
+| `Lokutor` | voices, languages, visemes, `fetch_voices()`, `fetch_languages()`... |
+| `LokutorAudio`, `LokutorError` | PCM helpers, and errors with `code`, `message`, `retryable` |
+
+`connect` and `disconnect` are called `open` and `close`, because every Godot object already has those two.
+
+**Your own model.** `on_llm_request` answers the conversation from your game or your server, and `llm` points it at
+an OpenAI-compatible endpoint.
+
+Full reference: [docs.lokutor.com](https://docs.lokutor.com/sdks/godot/reference).
 
 ## Microphone
 
@@ -96,10 +147,23 @@ ffmpeg -i forge.avi -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac forge.mp4
 
 ## Tests
 
-`tests/run_tests.gd` holds a real conversation with production, headless:
+`tests/unit_tests.gd` runs the whole addon against a mock server in the same process: no key, no network, no
+sound card. Run it on every change.
 
 ```
-tests/make_lines.sh                       # the player's lines, spoken by macOS `say`
-LOKUTOR_API_KEY=... godot --headless --path . --import
+godot --headless --path . --import
+godot --headless --path . --script res://tests/unit_tests.gd
+```
+
+`tests/public_tests.gd` checks production without a key: the public endpoints, and how a wrong key is refused.
+
+```
+godot --headless --path . --script res://tests/public_tests.gd
+```
+
+`tests/run_tests.gd` holds a real conversation with production:
+
+```
+tests/make_lines.sh                       # optional: the player's lines spoken by macOS `say`, instead of by the API
 LOKUTOR_API_KEY=... godot --headless --path . --script res://tests/run_tests.gd
 ```

@@ -15,7 +15,7 @@ namespace Lokutor
         Always,
         /// <summary>Only while the push-to-talk key (or SetTalking(true)) is held.</summary>
         PushToTalk,
-        /// <summary>No microphone (e.g. you send audio yourself through Session.SendMicrophone).</summary>
+        /// <summary>No microphone (e.g. you send audio yourself with FeedMicrophone).</summary>
         Off,
     }
 
@@ -58,17 +58,27 @@ namespace Lokutor
         [TextArea(4, 12)]
         public string persona = "You are a friendly villager in a fantasy town. Answer in one or two short sentences.";
 
+        [Tooltip("The line above what SetContext tells the character. Write it in the language of the persona.")]
+        public string contextHeading = "Right now in the game:";
+
         [Tooltip("F1-F5 (female) or M1-M5 (male), or a voice id from the Lokutor dashboard.")]
         public string voice = "F1";
 
         [Tooltip("en, es, fr, pt, ca, gl, eu... or auto: the character follows the language the player speaks.")]
         public string language = "en";
 
+        [Tooltip("Shifts the voice up or down: small creatures, giants.")]
+        [Range(-12f, 12f)]
+        public float pitch;
+
         [Tooltip("Start talking as soon as the scene starts. Off: call StartConversation() (e.g. when the player walks up).")]
         public bool startOnAwake = true;
 
         [Tooltip("The voice comes from the character's position (3D). Off: heard the same everywhere (2D).")]
         public bool spatialVoice = true;
+
+        [Tooltip("Open the connection again when it drops. The character does not remember what came before.")]
+        public bool autoReconnect = true;
 
         [Header("Microphone")]
         public MicMode micMode = MicMode.Always;
@@ -84,14 +94,23 @@ namespace Lokutor
         [Tooltip("Empty: the default microphone.")]
         public string microphoneDevice = "";
 
-        [Tooltip("Mutes the microphone while the character talks, so speakers can't make it interrupt itself. Turn off when players use headphones and should be able to interrupt.")]
+        [Tooltip("Mutes the microphone while the character talks, so speakers can't make it interrupt itself, and while any other Lokutor Agent or Lokutor Voice does, so that it does not answer them. Turn off when players use headphones and should be able to interrupt.")]
         public bool muteMicWhileSpeaking = true;
 
+        [Tooltip("The server has the character say \"One moment\" or the like while an action runs. Off: it says nothing until its answer.")]
+        public bool actionFiller;
+
+        [Tooltip("What it begins to say before it calls an action is heard. Turn it off with an action that it must call before it answers (\"how funny that was\"): the model can write its plan there.")]
+        public bool speakBeforeActions = true;
+
         [Header("Lip sync (optional)")]
-        [Tooltip("A face mesh with a mouth-open blend shape.")]
+        [Tooltip("Empty: the Lokutor Lip Sync on this object, under it or above it; without one, a new one, which finds by itself the faces whose mouth it knows, or uses the fields below.")]
+        public LokutorLipSync lipSync;
+
+        [Tooltip("A face mesh, when it is not under this object.")]
         public SkinnedMeshRenderer face;
 
-        [Tooltip("The blend shape's name, e.g. mouthOpen, jawOpen, MTH_A.")]
+        [Tooltip("Its mouth-open blend shape, when its names are not recognised.")]
         public string mouthBlendShape = "";
 
         [Tooltip("Or a jaw bone, rotated around its local X axis.")]
@@ -108,41 +127,62 @@ namespace Lokutor
         [Header("Events")]
         public LokutorTextEvent onPlayerSaid = new LokutorTextEvent();
         public LokutorTextEvent onCharacterSaid = new LokutorTextEvent();
+        [Tooltip("The player cut the character off: what they heard.")]
+        public LokutorTextEvent onCharacterInterrupted = new LokutorTextEvent();
         public LokutorStateEvent onStateChanged = new LokutorStateEvent();
+        [Tooltip("The conversation is over: why.")]
+        public LokutorTextEvent onConversationEnded = new LokutorTextEvent();
+        [Tooltip("The connection dropped and is being opened again.")]
+        public UnityEvent onReconnecting = new UnityEvent();
+        [Tooltip("It is open again, in a fresh conversation.")]
+        public UnityEvent onReconnected = new UnityEvent();
+
+        /// <summary>The player's words while they are still talking.</summary>
+        public event Action<string> PlayerSaidPartial;
+        /// <summary>An action ran: name, arguments, result.</summary>
+        public event Action<string, ActionArgs, string> ActionCalled;
+        /// <summary>Mouth shapes of the reply, as they arrive.</summary>
+        public event Action<IReadOnlyList<Viseme>> VisemesReceived;
+        /// <summary>The voice as it is given to the AudioSource (samples, rate): for a character that another character listens to. The array is reused.</summary>
+        public event Action<float[], int> VoicePlayed;
+        /// <summary>The server announced how many seconds this session may still run.</summary>
+        public event Action<int> SessionLimit;
+        public event Action<LokutorError> Error;
 
         /// <summary>
         /// For a shipped game: returns a short-lived ticket from YOUR server, which calls
         /// POST https://api.lokutor.com/ws-ticket with the API key. Set before StartConversation().
         /// </summary>
         public Func<Task<string>> TicketProvider;
+        /// <summary>Your own OpenAI-compatible language model. Set before StartConversation().</summary>
+        public CustomLLMConfig Llm;
+        /// <summary>Your own language model, running in the game: return the reply, or write it with reply.Chunk. Set before StartConversation().</summary>
+        public Func<LlmRequest, LlmReply, Task<string>> OnLlmRequest;
+        [NonSerialized] public string url = LokutorApi.VoiceAgentUrl;
 
-        /// <summary>The underlying session (events, transcripts, raw audio). Null until StartConversation().</summary>
+        /// <summary>The underlying session (events, raw audio). Null until StartConversation().</summary>
         public LokutorSession Session => session;
+        public LokutorVoicePlayer Player { get; private set; }
+        public LokutorMicrophone Mic { get; } = new LokutorMicrophone();
+        /// <summary>The player has muted their microphone.</summary>
+        public bool Muted { get; set; }
         public AgentState State => session != null ? session.State : AgentState.Disconnected;
         /// <summary>How open the mouth should be right now, 0..1 (already follows the audio you hear).</summary>
-        public float MouthOpen { get; private set; }
+        public float MouthOpen => lipSync != null ? lipSync.MouthOpen : 0f;
+        /// <summary>How much of the current reply has been heard, in seconds: the clock viseme times are read against.</summary>
+        public float HeardSeconds => session != null ? session.HeardSeconds : 0f;
+        /// <summary>Loudness of the character's voice right now (RMS).</summary>
+        public float VoiceLevel => session != null ? session.Playback.HeardLevel : 0f;
+        /// <summary>The character's voice is being heard.</summary>
+        public bool IsSpeaking => session != null && session.IsSpeaking;
+
+        internal static string UserAgent => "lokutor-unity/" + LokutorApi.Version + " (" + Application.unityVersion + ")";
 
         readonly List<AgentAction> codeActions = new List<AgentAction>();
+        readonly Dictionary<string, string> context = new Dictionary<string, string>();
+        List<TranscriptLine> lastTranscript = new List<TranscriptLine>();
         LokutorSession session;
-        AudioSource source;
         bool talkingOverride;
-        bool starting;
-
-        // Playback: a looping clip that is written a little ahead of the play head.
-        AudioClip voiceClip;
-        float[] written;      // a copy of the clip's samples, for lip sync at the play head
-        int clipRate, writePos, block;
-        float[] blockBuf;
-        const float LeadSeconds = 0.08f;
-
-        // Microphone
-        AudioClip micClip;
-        string micName;
-        int micRate, micPos, micBlock;
-        float[] micBlockBuf, micMono;
-
-        int mouthIndex = -1;
-        Quaternion jawRest;
 
         void Reset()
         {
@@ -154,13 +194,10 @@ namespace Lokutor
 
         void Awake()
         {
-            source = GetComponent<AudioSource>();
             // Also here, not only in Reset(): Reset never runs for a component added from code.
+            var source = GetComponent<AudioSource>();
             source.playOnAwake = false;
-            source.loop = true;
-            source.dopplerLevel = 0f;
             source.spatialBlend = spatialVoice ? 1f : 0f;
-            if (jaw != null) jawRest = jaw.localRotation;
         }
 
         void Start()
@@ -168,24 +205,37 @@ namespace Lokutor
             if (startOnAwake) StartConversation();
         }
 
+        // ---- Actions -----------------------------------------------------------------------------
+
         /// <summary>Lets the character call a game function. Works before or during a conversation.</summary>
         public LokutorAgent AddAction(string name, string description, Func<ActionArgs, string> handler, params ActionParam[] parameters)
+            => AddAction(new AgentAction(name, description, handler, parameters));
+
+        /// <summary>An action that takes a while (a walk, a web request): the character waits for the result.</summary>
+        public LokutorAgent AddActionAsync(string name, string description, Func<ActionArgs, Task<string>> handler, params ActionParam[] parameters)
+            => AddAction(AgentAction.Async(name, description, handler, parameters));
+
+        public LokutorAgent AddAction(AgentAction action)
         {
-            var a = new AgentAction(name, description, handler, parameters);
-            codeActions.RemoveAll(x => x.Name == a.Name);
-            codeActions.Add(a);
-            if (session != null)
-            {
-                session.AddAction(a);
-                session.RefreshActions();
-            }
+            codeActions.RemoveAll(x => x.Name == action.Name);
+            codeActions.Add(action);
+            session?.AddAction(action);
             return this;
         }
+
+        /// <summary>The character can no longer call it.</summary>
+        public void RemoveAction(string name)
+        {
+            codeActions.RemoveAll(x => x.Name == name);
+            session?.RemoveAction(name);
+        }
+
+        // ---- Conversation ------------------------------------------------------------------------
 
         /// <summary>Opens the conversation: the character greets the player and starts listening.</summary>
         public async void StartConversation()
         {
-            if (session != null || starting) return;
+            if (State != AgentState.Disconnected) return;
             string key = !string.IsNullOrEmpty(apiKey) ? apiKey
                        : !string.IsNullOrEmpty(DefaultApiKey) ? DefaultApiKey
                        : Environment.GetEnvironmentVariable("LOKUTOR_API_KEY");
@@ -195,17 +245,52 @@ namespace Lokutor
                                "set LokutorAgent.DefaultApiKey, or set TicketProvider for a shipped game.", this);
                 return;
             }
-            starting = true;
+            Player?.Stop();
+            PrepareLipSync();
+            var s = NewSession(key);
+            session = s;
+            Player = new LokutorVoicePlayer(GetComponent<AudioSource>(), s.Playback);
+            Player.VoicePlayed += (samples, rate) => VoicePlayed?.Invoke(samples, rate);
+            try
+            {
+                await s.ConnectAsync();
+            }
+            catch (Exception e)
+            {
+                if (session != s) return;          // stopped while connecting
+                s.Update();
+                session = null;
+                Player.Stop();
+                Debug.LogError("[Lokutor] " + e.Message, this);
+                Error?.Invoke(e.InnerException is LokutorException l ? l.Error : new LokutorError("ws.close", e.Message));
+                onConversationEnded.Invoke(e.Message);
+                return;
+            }
+            if (session == s && micMode != MicMode.Off) Mic.Start(microphoneDevice);
+        }
+
+        LokutorSession NewSession(string key)
+        {
             var s = new LokutorSession(new SessionOptions
             {
                 ApiKey = key,
                 TicketProvider = TicketProvider,
                 AgentId = string.IsNullOrEmpty(agentId) ? null : agentId,
                 Persona = string.IsNullOrEmpty(persona) ? null : persona,
+                ContextHeading = contextHeading,
                 Voice = string.IsNullOrEmpty(voice) ? null : voice,
                 Language = string.IsNullOrEmpty(language) ? null : language,
+                Pitch = pitch,
+                Llm = Llm,
+                OnLlmRequest = OnLlmRequest,
+                AutoReconnect = autoReconnect,
                 MuteMicWhileSpeaking = muteMicWhileSpeaking,
-                UserAgent = "lokutor-unity/0.1 (" + Application.unityVersion + ")",
+                // Phones and browsers hear their own speaker later (more buffering on both sides of the sound card).
+                EchoTailMs = Application.isMobilePlatform || Application.platform == RuntimePlatform.WebGLPlayer ? 700 : 300,
+                ActionFiller = actionFiller,
+                SpeakBeforeActions = speakBeforeActions,
+                Url = url,
+                UserAgent = UserAgent,
             });
             foreach (var b in actions)
             {
@@ -218,42 +303,51 @@ namespace Lokutor
                 });
             }
             foreach (var a in codeActions) s.AddAction(a);
+            s.OthersAudible = OthersAudible;
+            foreach (var c in context) s.SetContext(c.Key, c.Value);
             s.PlayerSaid += t => onPlayerSaid.Invoke(t);
+            s.PlayerSaidPartial += t => PlayerSaidPartial?.Invoke(t);
             s.AgentSaid += t => onCharacterSaid.Invoke(t);
+            s.AgentInterrupted += t => onCharacterInterrupted.Invoke(t);
             s.StateChanged += st => onStateChanged.Invoke(st);
-            s.Error += e => Debug.LogWarning("[Lokutor] " + e, this);
-            s.Disconnected += reason => Debug.Log("[Lokutor] Conversation ended: " + reason, this);
-
-            try
+            s.ActionCalled += (name, args, result) => ActionCalled?.Invoke(name, args, result);
+            s.VoiceCleared += () => { if (lipSync != null) lipSync.Clear(); };
+            s.Visemes += list =>
             {
-                await s.ConnectAsync();
-            }
-            catch (Exception e)
+                if (lipSync != null) lipSync.PushVisemes(list);
+                VisemesReceived?.Invoke(list);
+            };
+            s.SessionLimit += seconds => SessionLimit?.Invoke(seconds);
+            s.Reconnecting += () => onReconnecting.Invoke();
+            s.Reconnected += () => onReconnected.Invoke();
+            s.Error += e =>
             {
-                starting = false;
-                Debug.LogError("[Lokutor] " + e.Message, this);
-                return;
-            }
-            starting = false;
-            if (!this || !isActiveAndEnabled)
+                Debug.LogWarning("[Lokutor] " + e, this);
+                Error?.Invoke(e);
+            };
+            s.Disconnected += reason =>
             {
-                s.Dispose();
-                return;
-            }
-            session = s;
-            StartMicrophone();
+                Mic.Stop();
+                Player.Stop();
+                lastTranscript = s.GetTranscript();
+                onConversationEnded.Invoke(reason);
+            };
+            return s;
         }
 
         /// <summary>Ends the conversation and releases the microphone.</summary>
         public void StopConversation()
         {
-            StopMicrophone();
+            Mic.Stop();
             var s = session;
-            session = null;
-            if (s != null) _ = s.DisconnectAsync();
-            if (source != null) source.Stop();
-            MouthOpen = 0f;
-            ApplyMouth();
+            if (s != null)
+            {
+                _ = s.DisconnectAsync();
+                s.Update();            // what that raises
+                session = null;
+            }
+            Player?.Stop();
+            if (lipSync != null) lipSync.Release(this);
         }
 
         /// <summary>Changes who the character is, mid-conversation.</summary>
@@ -263,152 +357,116 @@ namespace Lokutor
             session?.SetPersona(newPersona);
         }
 
+        /// <summary>
+        /// Tells the character something about the game right now ("Time left", "20 seconds"), without rewriting its
+        /// persona. Null takes it out. A dashboard agent needs a persona here for this.
+        /// </summary>
+        public void SetContext(string key, string value)
+        {
+            if (value == null) context.Remove(key);
+            else context[key] = value;
+            session?.SetContext(key, value);
+        }
+
+        public void SetVoice(string newVoice)
+        {
+            voice = newVoice;
+            session?.SetVoice(newVoice);
+        }
+
+        /// <summary>"auto": the character follows the language the player speaks.</summary>
+        public void SetLanguage(string newLanguage)
+        {
+            language = newLanguage;
+            session?.SetLanguage(newLanguage);
+        }
+
+        public void SetPitch(float newPitch)
+        {
+            pitch = newPitch;
+            session?.SetPitch(newPitch);
+        }
+
+        /// <summary>Forgets the conversation so far (the character starts fresh).</summary>
+        public void ResetConversation() => session?.ResetConversation();
+
+        /// <summary>The conversation so far, or the last one.</summary>
+        public List<TranscriptLine> GetTranscript() => session != null ? session.GetTranscript() : lastTranscript;
+
         /// <summary>Push-to-talk from any input: true while the player holds the button.</summary>
         public void SetTalking(bool talking) => talkingOverride = talking;
+
+        /// <summary>What the character hears, when it does not come from the microphone (MicMode.Off): mono, any rate. Keep sending silence too.</summary>
+        public void FeedMicrophone(float[] samples, int offset, int count, int sampleRate) => session?.SendMicrophone(samples, offset, count, sampleRate);
 
         void Update()
         {
             var s = session;
             if (s == null) return;
             s.Update();
-            PumpMicrophone(s);
-            PumpPlayback(s);
-            UpdateMouth();
-        }
-
-        void LateUpdate() => ApplyMouth();
-
-        void OnDisable() => StopConversation();
-
-        // ---- Playback ----------------------------------------------------------------------------
-
-        void PumpPlayback(LokutorSession s)
-        {
-            int rate = s.PlaybackRate;
-            if (voiceClip == null || clipRate != rate)
+            if (session != s) return;          // one of the events stopped it
+            s.MuteMicWhileSpeaking = muteMicWhileSpeaking;
+            s.ActionFiller = actionFiller;
+            s.SpeakBeforeActions = speakBeforeActions;
+            Mic.Muted = Muted || !MicOpen();
+            Mic.Update(Hear);
+            if (s.State != AgentState.Disconnected)
             {
-                if (voiceClip != null) { source.Stop(); Destroy(voiceClip); }
-                clipRate = rate;
-                voiceClip = AudioClip.Create("Lokutor voice", rate, 1, rate, false); // 1 s, looping
-                written = new float[rate];
-                voiceClip.SetData(written, 0);
-                source.clip = voiceClip;
-                source.loop = true;
-                source.Play();
-                // 10 ms blocks divide the 1 s clip exactly at every common rate, so a block never
-                // straddles the loop point and needs no allocation.
-                block = rate % 100 == 0 ? rate / 100 : 0;
-                blockBuf = block > 0 ? new float[block] : null;
-                writePos = Align((int)(rate * LeadSeconds));
+                Player.Update();
+                s.SetVoiceAudibleUntil(Player.AudibleUntilUtc);
             }
-            if (!source.isPlaying) source.Play();
-
-            int len = voiceClip.samples;
-            int play = source.timeSamples;
-            int lead = (int)(rate * LeadSeconds);
-            int ahead = (writePos - play + len) % len;
-            if (ahead > len / 2)
-            {
-                // The play head overtook us (a long frame): start writing just ahead of it again.
-                writePos = Align((play + lead) % len);
-                ahead = (writePos - play + len) % len;
-            }
-            if (block > 0)
-            {
-                int voicedAhead = -1;
-                while (ahead < 2 * lead)
-                {
-                    if (s.Playback.Read(blockBuf, 0, block) > 0) voicedAhead = ahead + block;
-                    voiceClip.SetData(blockBuf, writePos);
-                    Array.Copy(blockBuf, 0, written, writePos, block);
-                    writePos = (writePos + block) % len;
-                    ahead += block;
-                }
-                if (voicedAhead > 0) ReportAudibleUntil(s, voicedAhead, rate);
-                return;
-            }
-            // Unusual playback rates: one write per frame, split at the loop point.
-            int need = 2 * lead - ahead;
-            if (need <= 0) return;
-            var chunk = new float[need];
-            if (s.Playback.Read(chunk, 0, need) > 0) ReportAudibleUntil(s, ahead + need, rate);
-            int first = Math.Min(need, len - writePos);
-            WriteClip(writePos, chunk, 0, first);
-            if (first < need) WriteClip(0, chunk, first, need - first);
-            writePos = (writePos + need) % len;
+            if (lipSync != null) lipSync.Feed(this, s.HeardSeconds, s.Playback.HeardLevel, s.IsSpeaking, Time.deltaTime);
         }
 
-        int Align(int pos) => block > 0 ? pos / block * block : pos;
+        void Hear(float[] samples, int count, int rate) => session?.SendMicrophone(samples, 0, count, rate);
 
-        // The voice just written plays after `samplesAhead` more samples and the mixer's own buffers:
-        // until then (and the room's echo after) the microphone stays muted.
-        void ReportAudibleUntil(LokutorSession s, int samplesAhead, int rate)
+        static readonly List<LokutorAgent> agents = new List<LokutorAgent>();
+
+        void OnEnable() => agents.Add(this);
+
+        void OnDisable()
         {
-            AudioSettings.GetDSPBufferSize(out int bufferLength, out int numBuffers);
-            double mixerSeconds = (double)bufferLength * numBuffers / Math.Max(1, AudioSettings.outputSampleRate);
-            s.SetVoiceAudibleUntil(DateTime.UtcNow.AddSeconds((double)samplesAhead / rate + mixerSeconds));
+            agents.Remove(this);
+            StopConversation();
         }
 
-        void WriteClip(int offset, float[] src, int srcOffset, int count)
+        // Another character is being heard, so it could reach the microphone too.
+        bool OthersAudible()
         {
-            var part = new float[count];
-            Array.Copy(src, srcOffset, part, 0, count);
-            voiceClip.SetData(part, offset);
-            Array.Copy(part, 0, written, offset, count);
+            foreach (var a in agents)
+                if (a != this && a.session != null && a.session.AgentAudible) return true;
+            return LokutorVoice.AnyAudible;
         }
 
-        void UpdateMouth()
+        // ---- Mouth and microphone ----------------------------------------------------------------
+
+        internal static LokutorLipSync FindLipSync(Component on, LokutorLipSync chosen)
         {
-            if (voiceClip == null || written == null) { MouthOpen = 0f; return; }
-            // Loudness of what is playing right now, so the mouth matches the sound, not the network.
-            int len = written.Length, play = source.timeSamples, window = clipRate / 50;
-            double sum = 0;
-            for (int i = 0; i < window; i++) { float v = written[(play + i) % len]; sum += v * v; }
-            float target = Mathf.Clamp01((float)Math.Sqrt(sum / window) * 4f * mouthGain);
-            MouthOpen = Mathf.Lerp(MouthOpen, target, target > MouthOpen ? 0.6f : 0.25f);
+            if (chosen != null) return chosen;
+            var found = NearLipSync(on);
+            return found != null ? found : on.gameObject.AddComponent<LokutorLipSync>();
         }
 
-        void ApplyMouth()
+        static LokutorLipSync NearLipSync(Component on)
         {
-            if (face != null && !string.IsNullOrEmpty(mouthBlendShape))
-            {
-                if (mouthIndex < 0 && face.sharedMesh != null) mouthIndex = face.sharedMesh.GetBlendShapeIndex(mouthBlendShape);
-                if (mouthIndex >= 0) face.SetBlendShapeWeight(mouthIndex, MouthOpen * 100f);
-            }
-            if (jaw != null) jaw.localRotation = jawRest * Quaternion.Euler(MouthOpen * jawMaxAngle, 0f, 0f);
+            var under = on.GetComponentInChildren<LokutorLipSync>(true);
+            return under != null ? under : on.GetComponentInParent<LokutorLipSync>();
         }
 
-        // ---- Microphone --------------------------------------------------------------------------
-
-        void StartMicrophone()
+        void PrepareLipSync()
         {
-            if (micMode == MicMode.Off) return;
-            if (Microphone.devices.Length == 0)
-            {
-                Debug.LogWarning("[Lokutor] No microphone found; the character can talk but cannot hear.", this);
-                return;
-            }
-            micName = string.IsNullOrEmpty(microphoneDevice) ? null : microphoneDevice;
-            Microphone.GetDeviceCaps(micName, out int minRate, out int maxRate);
-            micRate = minRate == 0 && maxRate == 0 ? 16000 : Mathf.Clamp(16000, minRate, maxRate);
-            micClip = Microphone.Start(micName, true, 1, micRate);
-            if (micClip == null)
-            {
-                Debug.LogWarning("[Lokutor] The microphone could not be opened (permission?).", this);
-                return;
-            }
-            micRate = micClip.frequency;
-            micPos = 0;
-            // Read in 20 ms blocks that divide the 1 s clip exactly, so a block never straddles the wrap.
-            micBlock = micRate % 50 == 0 ? micRate / 50 : 0;
-            micBlockBuf = micBlock > 0 ? new float[micBlock * micClip.channels] : null;
-            micMono = new float[Math.Max(micBlock, 1)];
-        }
-
-        void StopMicrophone()
-        {
-            if (micClip != null) Microphone.End(micName);
-            micClip = null;
+            if (lipSync != null) return;
+            bool made = NearLipSync(this) == null;
+            lipSync = FindLipSync(this, null);
+            if (!made) return;
+            lipSync.gain = mouthGain;
+            lipSync.jaw = jaw;
+            lipSync.jawMaxAngle = jawMaxAngle;
+            if (face == null) return;
+            lipSync.faces.Add(face);
+            if (string.IsNullOrEmpty(mouthBlendShape)) return;
+            for (int v = 0; v < 15; v++)
+                lipSync.mapping.Add(new LokutorVisemeShape(LokutorApi.Visemes[v], mouthBlendShape, LipSync.Openness[v]));
         }
 
         bool MicOpen()
@@ -428,52 +486,6 @@ namespace Lokutor
 #else
             return false;
 #endif
-        }
-
-        void PumpMicrophone(LokutorSession s)
-        {
-            if (micClip == null) return;
-            int pos = Microphone.GetPosition(micName);
-            if (pos < 0) return;
-            int len = micClip.samples, channels = micClip.channels;
-            bool open = MicOpen();
-            if (micBlock > 0)
-            {
-                while ((pos - micPos + len) % len >= micBlock)
-                {
-                    micClip.GetData(micBlockBuf, micPos);
-                    for (int i = 0; i < micBlock; i++)
-                    {
-                        float sum = 0f;
-                        for (int c = 0; c < channels; c++) sum += micBlockBuf[i * channels + c];
-                        micMono[i] = open ? sum / channels : 0f;
-                    }
-                    s.SendMicrophone(micMono, 0, micBlock, micRate);
-                    micPos = (micPos + micBlock) % len;
-                }
-                return;
-            }
-            // Odd sample rates: read whatever has arrived (allocates, but such devices are rare).
-            int count = (pos - micPos + len) % len;
-            if (count == 0) return;
-            int first = Math.Min(count, len - micPos);
-            var mono = new float[count];
-            ReadMono(micPos, first, channels, mono, 0, open);
-            if (first < count) ReadMono(0, count - first, channels, mono, first, open);
-            s.SendMicrophone(mono, 0, count, micRate);
-            micPos = pos;
-        }
-
-        void ReadMono(int offset, int count, int channels, float[] dst, int dstOffset, bool open)
-        {
-            var raw = new float[count * channels];
-            micClip.GetData(raw, offset);
-            for (int i = 0; i < count; i++)
-            {
-                float sum = 0f;
-                for (int c = 0; c < channels; c++) sum += raw[i * channels + c];
-                dst[dstOffset + i] = open ? sum / channels : 0f;
-            }
         }
     }
 }

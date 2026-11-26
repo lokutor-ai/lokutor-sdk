@@ -1,7 +1,7 @@
 // A scripted conversation with a game character, driven exactly the way an engine drives the SDK:
 // a 20 ms "frame" loop that feeds the microphone, pulls the character's voice from the playback
-// buffer, and calls Update(). The player's lines are spoken by macOS `say` and streamed as if from a
-// microphone, in real time, with silence in between. Everything the player would hear goes to a WAV.
+// buffer, and calls Update(). The player's lines are spoken by macOS `say`, or by the SDK's TTSClient where there is
+// none, and streamed as if from a microphone, in real time, with silence in between. Everything the player would hear goes to a WAV.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -21,8 +21,12 @@ static class NpcDemo
     {
         "Hi! I'm heading into the mountains. What do you have for me?",
         "The iron sword sounds good. I'll take it.",
+        "Tell me a long story about the mountains.",
+        "Wait, stop. How much is the shield?",
         "Thanks, Brom. Goodbye!",
     };
+    // The line that cuts Brom off.
+    const int BargeIn = 3;
 
     public static async Task<bool> Run(string outDir)
     {
@@ -85,7 +89,20 @@ static class NpcDemo
         session.Disconnected += r => Log("disconnected: " + r);
 
         // ---- Audio: the player's lines as 16 kHz mic audio ----
-        var lines = PlayerLines.Select(SayToPcm16k).ToList();
+        var lines = new List<float[]>();
+        using (var tts = new TTSClient(key))
+            foreach (var l in PlayerLines)
+            {
+                var spoken = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX) ? SayToPcm16k(l) : await Speak(tts, l, Log);
+                if (spoken == null) return false;
+                lines.Add(spoken);
+            }
+        var heard = await new STTClient(key).TranscribeAsync(Pcm16.FromFloat(lines[0], 0, lines[0].Length), new TranscribeOptions { SampleRate = 16000, Language = "en" });
+        Log("speech to text: " + (heard.Ok ? heard.Text : "" + heard.Error));
+        bool transcribed = heard.Ok && heard.Text.ToLowerInvariant().Contains("mountain");
+        int visemes = 0, cutOff = 0;
+        session.Visemes += v => visemes += v.Count;
+        session.AgentInterrupted += t => { cutOff++; Log("CUT OFF after: " + t); };
 
         var playerTrack = new List<float>();
         var agentTrack = new List<float>();
@@ -125,10 +142,10 @@ static class NpcDemo
         }
 
         // Waits for the character to answer and finish (or gives up after `timeout` seconds).
-        double WaitForReply(double timeout, double sinceSeconds)
+        double WaitForReply(double timeout, double sinceSeconds, bool onlyStart = false)
         {
-            RunFor(timeout, () => lastSpeechStart > sinceSeconds && session.State == AgentState.Ready);
-            RunFor(0.6); // the room after the voice
+            RunFor(timeout, () => lastSpeechStart > sinceSeconds && (session.State == AgentState.Ready || (onlyStart && clock.Elapsed.TotalSeconds - lastSpeechStart > 2.0)));
+            if (!onlyStart) RunFor(0.6); // the room after the voice
             return lastSpeechStart > sinceSeconds ? lastSpeechStart - sinceSeconds : -1;
         }
 
@@ -144,10 +161,12 @@ static class NpcDemo
         for (int i = 0; i < lines.Count; i++)
         {
             Log("PLAYER (speaking): " + PlayerLines[i]);
+            session.MuteMicWhileSpeaking = i != BargeIn;
             foreach (var v in lines[i]) micQueue.Enqueue(v);
             RunFor(30, () => micQueue.Count == 0);
+            session.MuteMicWhileSpeaking = true;
             double spokeEnd = clock.Elapsed.TotalSeconds;
-            double latency = WaitForReply(20, spokeEnd);
+            double latency = WaitForReply(20, spokeEnd, i + 1 == BargeIn);
             if (latency >= 0) { latencies.Add(latency); Log($"Brom answered {latency * 1000:0} ms after the player stopped"); }
             else Log("no answer within 20 s");
         }
@@ -172,6 +191,8 @@ static class NpcDemo
         summary.AppendLine();
         summary.AppendLine($"- Character voice heard: {(heardAgent ? "yes" : "NO")}");
         summary.AppendLine($"- Player lines recognised: {recognised} of {PlayerLines.Length}");
+        summary.AppendLine($"- Speech to text of a line: {(transcribed ? "yes" : "NO")}");
+        summary.AppendLine($"- Visemes: {visemes}; cut off: {cutOff}");
         summary.AppendLine($"- Game action: {(sold ? "give_item(iron sword) ran" : "give_item did NOT run")}; inventory [{string.Join(", ", inventory)}], gold {gold}");
         if (latencies.Count > 0)
             summary.AppendLine($"- Reply started {string.Join(", ", latencies.Select(l => (l * 1000).ToString("0") + " ms"))} after the player stopped talking (median {(latencies.OrderBy(x => x).ElementAt(latencies.Count / 2) * 1000):0} ms, includes end-of-turn detection)");
@@ -188,7 +209,16 @@ static class NpcDemo
         Console.WriteLine();
         Console.WriteLine(summary.ToString().Split(new[] { "## Transcript" }, StringSplitOptions.None)[0]);
 
-        return everSpoke && heardAgent && recognised >= 2 && sold;
+        return everSpoke && heardAgent && transcribed && recognised >= 2 && sold && visemes > 0 && cutOff > 0;
+    }
+
+    static async Task<float[]> Speak(TTSClient tts, string text, Action<string> log)
+    {
+        var said = await tts.SynthesizeAsync(text, new SynthesizeOptions { Voice = "F2", Visemes = true });
+        if (!said.Ok) { log("text to speech: " + said.Error); return null; }
+        var samples = Pcm16.ToFloat(said.Audio);
+        log($"text to speech: {samples.Length / (double)said.SampleRate:0.0} s, {said.Visemes.Count} visemes");
+        return LokutorAudio.Resample(samples, said.SampleRate, 16000);
     }
 
     /// <summary>Speaks a line with macOS `say` and returns it as 16 kHz mono floats.</summary>
