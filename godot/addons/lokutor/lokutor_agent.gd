@@ -119,6 +119,11 @@ var muted: bool = false:
 			microphone.muted = value
 var is_speaking: bool:
 	get: return state == State.SPEAKING
+## What the microphone hears reaches the character right now. False while `muted`, and with mute_mic_while_speaking
+## while a voice can still be heard (its own or another character's, the echo that follows it included): show this, not
+## is_speaking, as the sign that the player may talk, or the start of what they say can be lost.
+var hears_microphone: bool:
+	get: return not muted and not (mute_mic_while_speaking and (_agent_audible() or _others_audible()))
 var session_id: String:
 	get: return client.session_id if client else ""
 ## Rate of the character's voice.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+- `LokutorAgent.hears_microphone`: whether what the microphone hears reaches the character right now. It is false
+  while the microphone is muted, and with `mute_mic_while_speaking` while a voice can still be heard (the echo tail
+  after it included: 700 ms on phones and in browsers). Show it, not `is_speaking`, as the sign that the player may
+  talk, or the start of what they say is lost.
+- The microphone keeps a second of audio instead of a tenth: a frame that takes long (a web browser compiling a shader)
+  no longer loses what the player said meanwhile. It adds no delay.
+- `LokutorLipSync` sets a mouth shape that is barely open (under 0.004) to 0. In a web browser every face shape that is
+  not at rest costs a pass over the mesh on the GPU every frame, and the weights fade towards 0 without reaching it.
+
 ## 0.2.0
 
 - **Visemes.** The server's 15 mouth shapes drive `LokutorLipSync`: Oculus, VRM, ARKit, single-shape, custom, jaw and

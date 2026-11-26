@@ -298,7 +298,10 @@ func _apply() -> void:
 		var per_viseme: PackedFloat32Array = target[2]
 		for v in 15:
 			sum += weights[v] * per_viseme[v]
-		(target[0] as MeshInstance3D).set_blend_shape_value(target[1], clampf(sum * intensity, 0.0, 1.5))
+		var w := clampf(sum * intensity, 0.0, 1.5)
+		# Barely open is shut: a shape at rest costs nothing, while one that is on at all is one more pass over the
+		# mesh on the GPU every frame in a browser (WebGL), and the weights fade towards 0 without reaching it.
+		(target[0] as MeshInstance3D).set_blend_shape_value(target[1], w if w >= 0.004 else 0.0)
 	if jaw:
 		jaw.rotation = _jaw_rest + Vector3(deg_to_rad(jaw_max_angle_degrees) * mouth_open, 0.0, 0.0)
 	if _jaw_bone >= 0:

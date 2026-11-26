@@ -832,17 +832,23 @@ func _test_agent_mute() -> void:
 	a.feed_microphone(loud, 16000)
 	await until(func(): return s.audio.size() == 3200)
 	check(s.audio.decode_s16(100) > 10000, "the microphone is heard")
+	check(a.hears_microphone, "and hears_microphone says so")
 	reply(s, 1, "Hello", 0.6)
 	await until(func(): return a.state == LokutorAgent.State.SPEAKING and a.heard_seconds() > 0.1)
 	s.audio.clear()
 	a.feed_microphone(loud, 16000)
 	await until(func(): return s.audio.size() == 3200)
 	eq(s.audio.decode_s16(100), 0, "but not while the character speaks")
+	check(not a.hears_microphone, "and hears_microphone says that too")
 	a.mute_mic_while_speaking = false
 	s.audio.clear()
 	a.feed_microphone(loud, 16000)
 	await until(func(): return s.audio.size() == 3200)
 	check(s.audio.decode_s16(100) > 10000, "unless players wear headphones")
+	check(a.hears_microphone, "then it hears them while it speaks")
+	a.muted = true
+	check(not a.hears_microphone, "and not when muted")
+	a.muted = false
 	a.queue_free()
 
 
