@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Lokutor;
 
-static class UnitTests
+static partial class UnitTests
 {
     static int passed, failed;
 
@@ -31,6 +31,8 @@ static class UnitTests
         Run("Session: unknown action and a throwing handler still answer", SessionActionErrors);
         Run("Session: errors and visemes", SessionErrorsAndVisemes);
         Run("Session: language unset = en, auto or empty = follow the player", ConfigLanguageRules);
+        RunClientTests();
+        RunCharacterTests();
         Console.WriteLine($"unit tests: {passed} checks passed, {failed} failed");
         return failed == 0;
     }
@@ -75,9 +77,9 @@ static class UnitTests
         var sine = new float[inRate]; // 1 s of 440 Hz
         for (int i = 0; i < sine.Length; i++) sine[i] = (float)Math.Sin(2 * Math.PI * 440 * i / inRate) * 0.5f;
 
-        var oneShot = new StreamingResampler(inRate, outRate).Process(sine, 0, sine.Length);
+        var oneShot = new StreamResampler(inRate, outRate).Process(sine, 0, sine.Length);
         var chunked = new List<float>();
-        var r = new StreamingResampler(inRate, outRate);
+        var r = new StreamResampler(inRate, outRate);
         var rnd = new Random(1);
         for (int pos = 0; pos < sine.Length;)
         {
@@ -95,7 +97,7 @@ static class UnitTests
         for (int i = 1; i < oneShot.Length; i++) if (oneShot[i - 1] < 0 && oneShot[i] >= 0) crossings++;
         Check(Math.Abs(crossings - 440) <= 2, "pitch kept: " + crossings + " cycles in 1 s");
 
-        var up = new StreamingResampler(16000, 44100).Process(oneShot, 0, oneShot.Length);
+        var up = new StreamResampler(16000, 44100).Process(oneShot, 0, oneShot.Length);
         Check(Math.Abs(up.Length - 44100) <= 3, "upsampling length " + up.Length);
     }
 
@@ -126,7 +128,7 @@ static class UnitTests
         var a = new AgentAction("give_item", "Give an item", args => "ok",
             new ActionParam("item", "Which item", ParamType.String, true, "sword", "shield"),
             new ActionParam("count", "How many", ParamType.Integer, false));
-        var def = (Dictionary<string, object>)MiniJson.Parse(MiniJson.Serialize(a.ToToolDefinition()));
+        var def = (Dictionary<string, object>)MiniJson.Parse(MiniJson.Serialize(a.ToTool().ToJson()));
         var fn = (Dictionary<string, object>)def["function"];
         var ps = (Dictionary<string, object>)fn["parameters"];
         var props = (Dictionary<string, object>)ps["properties"];
@@ -220,9 +222,9 @@ static class UnitTests
         s.HandleServerMessage("{\"type\":\"status\",\"data\":\"listening\"}");
         s.Update();
         Check(s.State == AgentState.PlayerTalking, "the server's 'listening' means the player is talking");
-        System.Threading.Thread.Sleep(1500);
+        System.Threading.Thread.Sleep(3500);
         s.Update();
-        Check(s.State == AgentState.PlayerTalking, "still talking 1.5 s later (the server may still answer)");
+        Check(s.State == AgentState.PlayerTalking, "still talking 3.5 s later (the server may still answer)");
         System.Threading.Thread.Sleep(1200);
         s.Update();
         Check(s.State == AgentState.Ready, "Ready once nothing followed and the mic has been quiet: " + s.State);
@@ -335,7 +337,7 @@ static class UnitTests
         s.Error += e => err = e;
         s.VisemesReceived += m => marks = m;
         s.HandleServerMessage("{\"type\":\"error\",\"data\":{\"code\":\"validation.invalid_voice\",\"message\":\"voice \\\"Z9\\\" is not recognised\",\"retryable\":false}}");
-        s.HandleServerMessage("{\"type\":\"visemes\",\"data\":[{\"v\":0,\"c\":\"H\",\"t\":0.0},{\"v\":1,\"c\":\"o\",\"t\":0.08},{\"v\":2,\"c\":\"m\",\"t\":0.15}]}");
+        s.HandleServerMessage("{\"type\":\"visemes\",\"data\":[{\"v\":5,\"c\":\"kk\",\"t\":0.0,\"d\":0.08},{\"v\":13,\"c\":\"oh\",\"t\":0.08,\"d\":0.07},{\"v\":1,\"c\":\"PP\",\"t\":0.15,\"d\":0.1}]}");
         s.Update();
         Check(err != null && err.Code == "validation.invalid_voice", "server error code reaches Error");
         Check(marks != null && marks.Count == 3 && marks[1].Shape == MouthShape.O && marks[2].Shape == MouthShape.MBP && Math.Abs(marks[1].Time - 0.08f) < 1e-6,

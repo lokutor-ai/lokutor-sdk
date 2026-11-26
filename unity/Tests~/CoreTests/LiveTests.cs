@@ -20,6 +20,49 @@ static class LiveTests
         return ok;
     }
 
+    // What needs no key: the public endpoints, and how a key that is not one is refused.
+    public static async Task<bool> RunPublic()
+    {
+        bool ok = true;
+        ok &= await Check("the service is ready", async () => { var h = await LokutorApi.GetHealthAsync(); return h.Ready ? null : h.Status; });
+        ok &= await Check("the default voices exist", async () =>
+        {
+            var v = await LokutorApi.GetVoicesAsync();
+            return v.Exists(x => x.Id == "F1") && v.Exists(x => x.Id == "M1") && v.TrueForAll(x => x.Name != "" && x.Languages != null) ? null : v.Count + " voices";
+        });
+        ok &= await Check("languages", async () => { var l = await LokutorApi.GetLanguagesAsync(); return l.Exists(x => x.Code == "en") && l.Exists(x => x.Code == "es") ? null : l.Count.ToString(); });
+        ok &= await Check("a default model", async () => (await LokutorApi.GetModelsAsync()).Exists(m => m.IsDefault) ? null : "none");
+        ok &= await Check("the sample rate is the one the SDK plays", async () => { var c = await LokutorApi.GetConfigAsync(); return c.SampleRate == LokutorApi.OutputRate ? null : c.SampleRate.ToString(); });
+        ok &= await Check("status", async () => (await LokutorApi.GetStatusAsync()).Count > 0 ? null : "empty");
+        ok &= await Check("agent: a wrong key fails ConnectAsync with a clear error", WrongKeyFails);
+        ok &= await Check("agent client: a wrong key is an error that is not worth another try", async () =>
+        {
+            var a = new VoiceAgentClient { ApiKey = "lk_not_a_real_key", AutoReconnect = false };
+            LokutorError err = null;
+            a.Error += e => err = e;
+            bool opened = await a.ConnectAsync();
+            var sw = Stopwatch.StartNew();
+            while (err == null && sw.ElapsedMilliseconds < 5000) { a.Update(); Thread.Sleep(20); }
+            await a.DisconnectAsync();
+            Console.WriteLine("       " + err);
+            return !opened && err != null && !err.Retryable ? null : "opened " + opened + ", " + err;
+        });
+        ok &= await Check("text to speech: a wrong key", async () =>
+        {
+            using var tts = new TTSClient("lk_not_a_real_key");
+            var r = await tts.SynthesizeAsync("Hello.");
+            Console.WriteLine("       " + r.Error);
+            return !r.Ok && r.Audio.Length == 0 && !r.Error.Retryable ? null : "" + r.Error;
+        });
+        ok &= await Check("speech to text: a wrong key", async () =>
+        {
+            var r = await new STTClient("lk_not_a_real_key").TranscribeAsync(new byte[4], new TranscribeOptions { SampleRate = 16000 });
+            Console.WriteLine("       " + r.Error);
+            return !r.Ok && !r.Error.Retryable ? null : "" + r.Error;
+        });
+        return ok;
+    }
+
     static async Task<bool> Check(string name, Func<Task<string>> test)
     {
         string failure;

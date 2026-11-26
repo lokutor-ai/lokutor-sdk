@@ -15,6 +15,9 @@ namespace UnityEngine
         public GameObject gameObject => null;
         public Transform transform => null;
         public T GetComponent<T>() => default;
+        public T GetComponentInChildren<T>(bool includeInactive) => default;
+        public T GetComponentInParent<T>() => default;
+        public T[] GetComponentsInChildren<T>(bool includeInactive) => new T[0];
     }
     public class Behaviour : Component { public bool enabled { get; set; } public bool isActiveAndEnabled => true; }
     public class MonoBehaviour : Behaviour { }
@@ -76,15 +79,22 @@ namespace UnityEngine
         public static float Lerp(float a, float b, float t) => a;
         public static int Max(int a, int b) => a;
     }
-    public static class Time { public static float deltaTime => 0; public static float time => 0; }
+    public static class Time { public static float unscaledTime => 0f;
+        public static float deltaTime => 0; public static float unscaledDeltaTime => 0; public static float time => 0; }
     public static class Debug
     {
         public static void Log(object m) { }
         public static void Log(object m, Object ctx) { }
+        public static void LogWarning(object m) { }
         public static void LogWarning(object m, Object ctx) { }
         public static void LogError(object m, Object ctx) { }
     }
-    public static class Application { public static string unityVersion => ""; }
+    public static class Application { public static string unityVersion => ""; public static string persistentDataPath => ""; public static bool isMobilePlatform => false; public static RuntimePlatform platform => RuntimePlatform.WindowsPlayer; }
+    public enum RuntimePlatform { WindowsPlayer, WebGLPlayer, Android, IPhonePlayer }
+    public static class Resources { public static T Load<T>(string path) where T : Object => null; }
+    public class TextAsset : Object { public byte[] bytes => null; }
+    public sealed class Sprite : Object { }
+    public sealed class AudioListener : Behaviour { public static bool pause { get; set; } }
     public sealed class AudioSettings
     {
         public static int outputSampleRate => 48000;
@@ -111,6 +121,7 @@ namespace UnityEngine
         public float maxDistance { get; set; }
         public int timeSamples { get; set; }
         public bool isPlaying => false;
+        public bool ignoreListenerPause { get; set; }
         public void Play() { }
         public void Stop() { }
     }
@@ -122,8 +133,14 @@ namespace UnityEngine
         public static int GetPosition(string deviceName) => 0;
         public static void GetDeviceCaps(string deviceName, out int minFreq, out int maxFreq) { minFreq = maxFreq = 0; }
     }
-    public class Mesh : Object { public int GetBlendShapeIndex(string blendShapeName) => -1; }
+    public class Mesh : Object
+    {
+        public int blendShapeCount => 0;
+        public string GetBlendShapeName(int shapeIndex) => "";
+        public int GetBlendShapeIndex(string blendShapeName) => -1;
+    }
     public class Renderer : Component { }
+    public sealed class SpriteRenderer : Renderer { public Sprite sprite { get; set; } }
     public class SkinnedMeshRenderer : Renderer
     {
         public Mesh sharedMesh { get; set; }
@@ -137,6 +154,7 @@ namespace UnityEngine
     [AttributeUsage(AttributeTargets.Field)] public sealed class TextAreaAttribute : Attribute { public TextAreaAttribute(int min, int max) { } }
     [AttributeUsage(AttributeTargets.Field)] public sealed class RangeAttribute : Attribute { public RangeAttribute(float min, float max) { } }
     [AttributeUsage(AttributeTargets.Class)] public sealed class AddComponentMenu : Attribute { public AddComponentMenu(string m) { } }
+    [AttributeUsage(AttributeTargets.Class)] public sealed class DisallowMultipleComponent : Attribute { }
     [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)] public sealed class RequireComponent : Attribute { public RequireComponent(Type t) { } }
 }
 namespace UnityEngine.Events

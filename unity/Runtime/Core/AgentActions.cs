@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading.Tasks;
 
 namespace Lokutor
 {
@@ -80,9 +81,16 @@ namespace Lokutor
         public string Name { get; }
         public string Description { get; }
         public IReadOnlyList<ActionParam> Parameters { get; }
-        internal Func<ActionArgs, string> Handler { get; }
+        internal Func<ActionArgs, Task<string>> Handler { get; }
 
         public AgentAction(string name, string description, Func<ActionArgs, string> handler, params ActionParam[] parameters)
+            : this(name, description, parameters, handler == null ? (Func<ActionArgs, Task<string>>)null : args => Task.FromResult(handler(args))) { }
+
+        /// <summary>An action that takes a while: the character waits for the result.</summary>
+        public static AgentAction Async(string name, string description, Func<ActionArgs, Task<string>> handler, params ActionParam[] parameters)
+            => new AgentAction(name, description, parameters, handler);
+
+        AgentAction(string name, string description, ActionParam[] parameters, Func<ActionArgs, Task<string>> handler)
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An action needs a name.");
             foreach (char c in name)
@@ -94,8 +102,8 @@ namespace Lokutor
             Parameters = parameters ?? new ActionParam[0];
         }
 
-        /// <summary>The OpenAI-style function definition the server expects in "tools".</summary>
-        internal Dictionary<string, object> ToToolDefinition()
+        /// <summary>The definition the language model sees.</summary>
+        public ToolDefinition ToTool()
         {
             var props = new Dictionary<string, object>();
             var required = new List<object>();
@@ -112,21 +120,12 @@ namespace Lokutor
                 props[p.Name] = schema;
                 if (p.Required) required.Add(p.Name);
             }
-            return new Dictionary<string, object>
+            return new ToolDefinition(Name, Description, new Dictionary<string, object>
             {
-                ["type"] = "function",
-                ["function"] = new Dictionary<string, object>
-                {
-                    ["name"] = Name,
-                    ["description"] = Description,
-                    ["parameters"] = new Dictionary<string, object>
-                    {
-                        ["type"] = "object",
-                        ["properties"] = props,
-                        ["required"] = required,
-                    },
-                },
-            };
+                ["type"] = "object",
+                ["properties"] = props,
+                ["required"] = required,
+            });
         }
     }
 }

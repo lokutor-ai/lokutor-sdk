@@ -1,17 +1,26 @@
 extends SceneTree
-## Headless live test of the LokutorAgent node against production:
+## Headless live test against production: text to speech, speech to text, and a whole conversation with a LokutorAgent.
 ##   godot --headless --path . --script res://tests/run_tests.gd
-## Needs LOKUTOR_API_KEY, and tests/lines/line1.pcm.. (16 kHz mono s16le; tests/make_lines.sh makes
-## them with macOS `say`). The lines are fed as microphone audio in real time; the character's
-## voice is consumed in real time without a sound card. Exit code 0 = passed.
+## Needs LOKUTOR_API_KEY. The player's lines are tests/lines/line1.pcm.. (16 kHz mono s16le; tests/make_lines.sh makes them
+## with macOS `say`) or, without them, LokutorTTSClient's. They are fed as microphone audio in real time; the character's
+## voice is consumed in real time without a sound card. LOKUTOR_BASE_URL is another server, such as ws://127.0.0.1:8791.
+## Exit code 0 = passed.
 
 const LINES := [
 	"Hi! I'm heading into the mountains. What do you have for me?",
 	"The iron sword sounds good. I'll take it.",
+	"Tell me a long story about the mountains.",
+	"Wait, stop. How much is the shield?",
 	"Thanks, Brom. Goodbye!",
 ]
+## The line that cuts Brom off.
+const BARGE_IN := 3
 
 var agent: LokutorAgent
+var base := ""
+var lines: Array[PackedByteArray] = []
+var visemes := 0
+var cut_off := 0
 var t0 := 0
 var log_lines := PackedStringArray()
 var heard_player := 0
@@ -41,9 +50,17 @@ func _run() -> void:
 		print("set LOKUTOR_API_KEY")
 		quit(2)
 		return
+	base = OS.get_environment("LOKUTOR_BASE_URL")
+	if base == "":
+		base = "wss://api.lokutor.com"
 	await process_frame
+	if not await _make_lines():
+		print("GODOT LIVE TEST: FAILED: " + "; ".join(failures))
+		quit(1)
+		return
 
 	agent = LokutorAgent.new()
+	agent.url = base + "/ws/agent"
 	agent.start_on_ready = false
 	# LOKUTOR_REAL_AUDIO=1: through a real AudioStreamGenerator (the dummy audio driver plays it).
 	agent.simulate_audio_device = OS.get_environment("LOKUTOR_REAL_AUDIO") != "1"
@@ -61,6 +78,8 @@ func _run() -> void:
 	agent.action_called.connect(_on_action)
 	agent.error_occurred.connect(_on_error)
 	agent.conversation_ended.connect(_on_ended)
+	agent.visemes_received.connect(func(list): visemes += list.size())
+	agent.character_interrupted.connect(_on_interrupted)
 	root.add_child(agent)
 
 	_log("connecting")
@@ -70,14 +89,13 @@ func _run() -> void:
 		failures.append("no greeting")
 
 	for i in LINES.size():
-		var pcm := FileAccess.get_file_as_bytes("res://tests/lines/line%d.pcm" % (i + 1))
-		if pcm.is_empty():
-			failures.append("missing tests/lines/line%d.pcm (run tests/make_lines.sh)" % (i + 1))
-			break
+		if i == BARGE_IN:
+			agent.mute_mic_while_speaking = false
 		_log("PLAYER (speaking): " + LINES[i])
-		await _speak(pcm)
+		await _speak(lines[i])
+		agent.mute_mic_while_speaking = true
 		var stopped := _now()
-		var latency := await _wait_reply(20.0, stopped)
+		var latency := await _wait_reply(20.0, stopped, i + 1 == BARGE_IN)
 		if latency >= 0:
 			_log("Brom answered %d ms after the player stopped" % int(latency * 1000))
 		else:
@@ -88,6 +106,10 @@ func _run() -> void:
 
 	if heard_player < 2:
 		failures.append("only %d player lines recognised" % heard_player)
+	if visemes == 0:
+		failures.append("no visemes")
+	if cut_off == 0:
+		failures.append("the interruption was not noticed")
 	if not sold:
 		failures.append("give_item(iron sword) never ran")
 	var voiced := 0
@@ -103,11 +125,40 @@ func _run() -> void:
 	f.close()
 
 	if failures.is_empty():
-		print("GODOT LIVE TEST: PASSED (%d player lines recognised, give_item ran, %.1f s of voice)" % [heard_player, voiced / 44100.0])
+		print("GODOT LIVE TEST: PASSED (%d player lines recognised, give_item ran, cut off %d times, %d visemes, %.1f s of voice)" % [heard_player, cut_off, visemes, voiced / 44100.0])
 		quit(0)
 	else:
 		print("GODOT LIVE TEST: FAILED: " + "; ".join(failures))
 		quit(1)
+
+
+## The player's lines, and with them text to speech and back.
+func _make_lines() -> bool:
+	var tts := LokutorTTSClient.new()
+	root.add_child(tts)
+	tts.server_url = base + "/ws/tts"
+	var stt := LokutorSTTClient.new()
+	stt.server_url = base + "/ws/stt"
+	for i in LINES.size():
+		var pcm := FileAccess.get_file_as_bytes("res://tests/lines/line%d.pcm" % (i + 1))
+		if pcm.is_empty():
+			var said := await tts.synthesize(LINES[i], {"voice": "F2", "visemes": true})
+			if not said.ok:
+				failures.append("text to speech: %s" % said.error)
+				break
+			if said.visemes.is_empty():
+				failures.append("text to speech: no visemes")
+			var samples := LokutorAudio.pcm16_to_float32(said.audio)
+			pcm = LokutorAudio.float32_to_pcm16(LokutorAudio.resample(samples, said.sample_rate, 16000))
+			_log("text to speech: %.1f s, %d visemes" % [samples.size() / float(said.sample_rate), said.visemes.size()])
+		lines.append(pcm)
+	if lines.size() == LINES.size():
+		var heard := await stt.transcribe(lines[0], {"sample_rate": 16000, "language": "en"})
+		_log("speech to text: " + (heard.text if heard.ok else str(heard.error)))
+		if not heard.ok or not heard.text.to_lower().contains("mountain"):
+			failures.append("speech to text: " + (heard.text if heard.ok else str(heard.error)))
+	tts.queue_free()
+	return lines.size() == LINES.size()
 
 
 func _give_item(args: Dictionary) -> String:
@@ -142,6 +193,11 @@ func _on_error(code: String, message: String) -> void:
 	_log("ERROR %s: %s" % [code, message])
 
 
+func _on_interrupted(heard: String) -> void:
+	cut_off += 1
+	_log("CUT OFF after: " + heard)
+
+
 func _on_ended(reason: String) -> void:
 	_log("ended: " + reason)
 
@@ -162,8 +218,8 @@ func _speak(pcm: PackedByteArray) -> void:
 			sent = due
 
 
-## Keeps the mic stream going (silence) until the character has answered and finished.
-func _wait_reply(timeout: float, since: float) -> float:
+## Keeps the mic stream going (silence) until the character has answered and finished, or has spoken for a moment.
+func _wait_reply(timeout: float, since: float, only_start := false) -> float:
 	var end := _now() + timeout
 	var last := Time.get_ticks_msec()
 	while _now() < end:
@@ -175,7 +231,7 @@ func _wait_reply(timeout: float, since: float) -> float:
 			silence.resize(gap)
 			agent.feed_microphone(silence, 16000)
 			last = now
-		if spoke_since > since and agent.state == LokutorAgent.State.READY:
+		if spoke_since > since and (agent.state == LokutorAgent.State.READY or (only_start and now / 1000.0 - t0 / 1000.0 - spoke_since > 2.0)):
 			break
 	return spoke_since - since if spoke_since > since else -1.0
 
