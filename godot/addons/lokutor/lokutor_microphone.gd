@@ -9,6 +9,26 @@ signal captured(pcm16: PackedByteArray)
 signal captured_float(samples: PackedFloat32Array, rate: int)
 
 const ANDROID_PERMISSION := "android.permission.RECORD_AUDIO"
+## In a browser Godot reads the microphone as two channels, but Firefox and Safari hand it one: Godot then takes two
+## samples of voice for each moment and hears the player an octave up and in pieces. This puts every microphone the page
+## opens through a stage that makes it two channels (the same voice in both) before Godot's audio sees it.
+const _WEB_STEREO_INPUT := """(function () {
+	var Context = window.AudioContext || window.webkitAudioContext;
+	if (!Context || Context.prototype.lokutorStereoInput) return;
+	var create = Context.prototype.createMediaStreamSource;
+	Context.prototype.createMediaStreamSource = function (stream) {
+		var source = create.call(this, stream);
+		var stereo = this.createGain();
+		stereo.channelCount = 2;
+		stereo.channelCountMode = 'explicit';
+		stereo.channelInterpretation = 'speakers';
+		AudioNode.prototype.connect.call(source, stereo);
+		source.connect = function () { return stereo.connect.apply(stereo, arguments); };
+		source.disconnect = function () { stereo.disconnect(); AudioNode.prototype.disconnect.call(source); };
+		return source;
+	};
+	Context.prototype.lokutorStereoInput = true;
+})();"""
 
 ## Sends silence instead of the microphone (the server still needs to hear pauses).
 var muted: bool = false
@@ -51,6 +71,8 @@ func start() -> bool:
 	_player.bus = _bus
 	add_child(_player)
 	_open += 1
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval(_WEB_STEREO_INPUT, true)
 	if _may_record():
 		_player.play()
 	_resampler = LokutorAudio.StreamResampler.new(int(AudioServer.get_mix_rate()), Lokutor.INPUT_RATE)

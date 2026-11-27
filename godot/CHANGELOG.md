@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- The microphone in Firefox and Safari: they hand a web page's audio one channel where Chrome and Edge hand it two, and
+  Godot's web audio reads two, so the player was heard an octave up and in pieces and nothing they said was understood.
+  `LokutorMicrophone` now gives Godot two channels (the same voice in both) in every browser.
+
 ## 0.2.1
 
 - `LokutorAgent.hears_microphone`: whether what the microphone hears reaches the character right now. It is false

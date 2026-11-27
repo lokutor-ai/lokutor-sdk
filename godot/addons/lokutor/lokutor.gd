@@ -3,7 +3,7 @@ extends RefCounted
 ## Constants and helpers shared by the Lokutor nodes: voices, languages, visemes, addresses, and the
 ## public discovery endpoints (no API key needed). The same names as the JavaScript and Python SDKs.
 
-const VERSION := "0.2.1"
+const VERSION := "0.2.2"
 
 const VOICE_AGENT_URL := "wss://api.lokutor.com/ws/agent"
 const TTS_URL := "wss://api.lokutor.com/ws/tts"
