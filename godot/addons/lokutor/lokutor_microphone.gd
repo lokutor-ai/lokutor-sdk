@@ -37,7 +37,11 @@ func start() -> bool:
 	var bus := AudioServer.bus_count
 	AudioServer.add_bus(bus)
 	AudioServer.set_bus_name(bus, _bus)
-	AudioServer.add_bus_effect(bus, AudioEffectCapture.new())
+	var capture := AudioEffectCapture.new()
+	# Room for a second: a frame that takes long (a browser compiling a shader can hold the game a tenth of a second or
+	# more) must not lose what the player says meanwhile. All of it is read every frame, so it adds no delay.
+	capture.buffer_length = 1.0
+	AudioServer.add_bus_effect(bus, capture)
 	AudioServer.set_bus_mute(bus, true)          # captured, not played back to the player
 	_capture = AudioServer.get_bus_effect(bus, 0) as AudioEffectCapture
 	_capture.clear_buffer()
